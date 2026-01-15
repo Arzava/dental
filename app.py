@@ -8,7 +8,7 @@ from streamlit_image_comparison import image_comparison
 
 # --- SAYFA YAPILANDIRMASI ---
 st.set_page_config(
-    page_title="Alveolar AI",
+    page_title="Alveolar AI (MM Ölçüm)",
     page_icon="🦷",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -17,7 +17,6 @@ st.set_page_config(
 # --- CSS TASARIM ---
 st.markdown("""
 <style>
-    /* Kart Tasarımları */
     .metric-card {
         background-color: #ffffff;
         border-radius: 12px;
@@ -59,7 +58,7 @@ st.markdown("""
 def load_model(path):
     return YOLO(path)
 
-def process_image(image_input, model, alpha_val, thresh_val):
+def process_image(image_input, model, alpha_val, px_mm_val, thresh_mm_val):
     # PIL -> OpenCV (BGR)
     img_bgr = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
     h, w = img_bgr.shape[:2]
@@ -84,8 +83,14 @@ def process_image(image_input, model, alpha_val, thresh_val):
     # Birleştirme
     img_result = cv2.addWeighted(overlay, alpha_val, img_bgr, 1 - alpha_val, 0)
 
-    # Analiz
-    analysis_results = alveolar_krest_analysis(res, img_result, threshold_px=thresh_val)
+    # --- ANALİZ (ARTIK MM CİNSİNDEN) ---
+    # Katsayıyı ve MM eşik değerini gönderiyoruz
+    analysis_results = alveolar_krest_analysis(
+        res, 
+        img_result, 
+        px_to_mm_ratio=px_mm_val, 
+        threshold_mm=thresh_mm_val
+    )
     
     # Çizimler
     mid_x = w // 2
@@ -93,6 +98,7 @@ def process_image(image_input, model, alpha_val, thresh_val):
 
     for side in ["LEFT", "RIGHT"]:
         r = analysis_results[side]
+        # thickness_px hala çizim koordinatları için gerekli
         if r["thickness_px"] is not None:
             x, y_s, y_k = r["x_col"], r["sinus_y"], r["kret_y"]
             cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 3) 
@@ -101,9 +107,9 @@ def process_image(image_input, model, alpha_val, thresh_val):
 
     return img_bgr, img_result, analysis_results 
 
-# --- YARDIMCI HTML KART OLUŞTURUCU ---
+# --- KART OLUŞTURUCU (GÜNCELLENDİ: ARTIK MM GÖSTERİYOR) ---
 def create_card(side_name, info):
-    if info['thickness_px'] is None:
+    if info['thickness_mm'] is None:
         return f"""
         <div class="metric-card danger">
             <div class="metric-title">{side_name}</div>
@@ -112,7 +118,7 @@ def create_card(side_name, info):
         </div>
         """
     
-    px = info['thickness_px']
+    val_mm = info['thickness_mm']
     decision = info['decision']
     is_safe = "GEREKMEZ" in decision
     
@@ -124,7 +130,7 @@ def create_card(side_name, info):
     return f"""
     <div class="metric-card {color_class}">
         <div class="metric-title">{side_name}</div>
-        <div class="metric-value">{px} <span style="font-size:1rem; color:#999">px</span></div>
+        <div class="metric-value">{val_mm} <span style="font-size:1rem; color:#999">mm</span></div>
         <div class="metric-status" style="background:{status_bg}; color:{status_text};">
             {icon} {decision}
         </div>
@@ -135,19 +141,41 @@ def create_card(side_name, info):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=60) 
     st.title("Alveolar AI")
-    st.caption("Dental Radyoloji Asistanı v1.0")
+    st.caption("Dental Radyoloji Asistanı v2.0 (MM)")
     st.divider()
     
-    st.subheader("⚙️ Parametreler")
-    thresh_val = st.slider("Karar Eşiği (px)", 5, 100, 20)
+    st.subheader("📏 Kalibrasyon")
+    
+    # 1. KATSAYI GİRİŞİ (BU OLMADAN HESAP OLMAZ)
+    px_to_mm = st.number_input(
+        "1 Piksel kaç mm?",
+        min_value=0.001, 
+        max_value=5.0, 
+        value=0.100, 
+        step=0.001,
+        format="%.3f",
+        help="Röntgendeki bilinen bir referans uzunluğunu piksel sayısına bölerek bu katsayıyı bulun."
+    )
+    
+    st.subheader("⚙️ Karar Ayarları")
+    
+    # 2. THRESHOLD SLIDER (ARTIK MM CİNSİNDEN)
+    # Varsayılan değer 5.0 mm (örnek)
+    thresh_mm = st.slider(
+        "Graft Karar Eşiği (mm)", 
+        min_value=1.0, 
+        max_value=15.0, 
+        value=5.0, 
+        step=0.5,
+        help="Kemik kalınlığı bu değerin (mm) altındaysa GRAFT GEREKLİ kararı verilir."
+    )
+    st.info(f"Sınır: **{thresh_mm} mm**")
+    
+    st.divider()
     alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4)
-    # SLIDER KONUM AYARI KALDIRILDI
-    
-    st.divider()
-    st.info("Hekim kontrolü şarttır.")
 
 # --- ANA EKRAN ---
-st.title("🦷 Akıllı Kemik Analizi")
+st.title("🦷 Akıllı Kemik Analizi (Milimetrik)")
 
 uploaded_file = st.file_uploader("", type=["jpg", "png", "jpeg"])
 
@@ -159,8 +187,8 @@ if uploaded_file:
         st.error("Model yüklenemedi! 'best.pt' dosyasını kontrol edin.")
         st.stop()
 
-    # Analiz
-    orig_img, proc_img, data = process_image(image, model, alpha, thresh_val)
+    # Analiz (Yeni parametreleri gönderiyoruz)
+    orig_img, proc_img, data = process_image(image, model, alpha, px_to_mm, thresh_mm)
     
     img1 = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
     img2 = cv2.cvtColor(proc_img, cv2.COLOR_BGR2RGB)
@@ -180,7 +208,7 @@ if uploaded_file:
                 label1="Orijinal",
                 label2="Analiz",
                 width=800, 
-                starting_position=2, # SABİT: EN SOL (%2)
+                starting_position=2,
                 show_labels=True,
                 make_responsive=True,
                 in_memory=True
@@ -189,13 +217,12 @@ if uploaded_file:
             st.image(img2, use_container_width=True)
 
     with col_right:
-        st.subheader("📋 Rapor")
+        st.subheader("📋 MM Raporu")
         st.markdown(create_card("HASTA SAĞ", data["LEFT"]), unsafe_allow_html=True)
         st.write("") 
         st.markdown(create_card("HASTA SOL", data["RIGHT"]), unsafe_allow_html=True)
 
 else:
-    # Boş durum
     st.markdown("""
     <div style="
         border: 2px dashed #ccc; 
@@ -205,6 +232,6 @@ else:
         color: gray;
         margin-top: 20px;">
         <h3>Röntgen Yükleyin</h3>
-        <p>Sürükleyip bırakın</p>
+        <p>Milimetrik ölçüm için dosya seçin</p>
     </div>
     """, unsafe_allow_html=True)
