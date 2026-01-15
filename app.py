@@ -14,9 +14,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS TASARIM ---
+# --- CSS TASARIM (DARK MODE UYUMLU PROFESYONEL KARTLAR) ---
 st.markdown("""
 <style>
+    /* Kart Tasarımı */
     .metric-card {
         background-color: #ffffff;
         border-radius: 12px;
@@ -25,7 +26,7 @@ st.markdown("""
         text-align: center;
         margin-bottom: 10px;
         border-left: 5px solid #4CAF50;
-        color: #333333 !important;
+        color: #333333 !important; /* Yazılar zorla siyah */
     }
     .metric-card.danger {
         border-left: 5px solid #FF5252;
@@ -53,21 +54,22 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- FONKSİYONLAR ---
+# --- MODEL YÜKLEME ---
 @st.cache_resource
 def load_model(path):
     return YOLO(path)
 
+# --- GÖRÜNTÜ İŞLEME VE ANALİZ ---
 def process_image(image_input, model, alpha_val, px_mm_val, thresh_mm_val):
-    # PIL -> OpenCV (BGR)
+    # PIL Görüntüsünü OpenCV formatına (BGR) çevir
     img_bgr = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
     h, w = img_bgr.shape[:2]
 
-    # Tahmin
+    # Model Tahmini
     results_list = model.predict(img_bgr, conf=0.5)
     res = results_list[0]
 
-    # Maske Katmanı
+    # --- MASKE KATMANI ---
     overlay = img_bgr.copy()
     COLOR_SINUS = (0, 255, 255)  # Sarı
     COLOR_KRET  = (0, 0, 255)    # Kırmızı
@@ -80,11 +82,10 @@ def process_image(image_input, model, alpha_val, px_mm_val, thresh_mm_val):
             if cls == 3: cv2.fillPoly(overlay, [pts], COLOR_SINUS)
             elif cls == 0: cv2.fillPoly(overlay, [pts], COLOR_KRET)
 
-    # Birleştirme
+    # Orijinal resim ile maskeyi birleştir (Saydamlık)
     img_result = cv2.addWeighted(overlay, alpha_val, img_bgr, 1 - alpha_val, 0)
 
-    # --- ANALİZ (ARTIK MM CİNSİNDEN) ---
-    # Katsayıyı ve MM eşik değerini gönderiyoruz
+    # --- ANALİZ (MM DÖNÜŞÜMÜ DAHİL) ---
     analysis_results = alveolar_krest_analysis(
         res, 
         img_result, 
@@ -92,22 +93,41 @@ def process_image(image_input, model, alpha_val, px_mm_val, thresh_mm_val):
         threshold_mm=thresh_mm_val
     )
     
-    # Çizimler
+    # --- ÇİZİMLER ---
+    # Orta referans çizgisi
     mid_x = w // 2
     cv2.line(img_result, (mid_x, 0), (mid_x, h), (200, 200, 200), 1) 
 
     for side in ["LEFT", "RIGHT"]:
         r = analysis_results[side]
-        # thickness_px hala çizim koordinatları için gerekli
+        
         if r["thickness_px"] is not None:
             x, y_s, y_k = r["x_col"], r["sinus_y"], r["kret_y"]
-            cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 3) 
-            cv2.line(img_result, (x-25, y_s), (x+25, y_s), (255, 0, 0), 2) 
-            cv2.line(img_result, (x-25, y_k), (x+25, y_k), (0, 0, 255), 2) 
+            
+            # 1. Ölçüm ve Sınır Çizgileri
+            cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 3)       # Yeşil Dikey
+            cv2.line(img_result, (x-25, y_s), (x+25, y_s), (255, 0, 0), 2) # Mavi Üst
+            cv2.line(img_result, (x-25, y_k), (x+25, y_k), (0, 0, 255), 2) # Kırmızı Alt
+
+            # 2. RESİM ÜZERİNE YAZI YAZMA (YENİ ÖZELLİK)
+            mm_val = r["thickness_mm"]
+            text_label = f"{mm_val} mm"
+            
+            # Yazı konumu: Çizginin ortası ve biraz sağı
+            mid_y = (y_s + y_k) // 2
+            text_pos = (x + 15, mid_y) 
+
+            # Okunabilirlik için Siyah Dış Hat (Outline)
+            cv2.putText(img_result, text_label, text_pos, 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4, cv2.LINE_AA)
+            
+            # Beyaz Yazı
+            cv2.putText(img_result, text_label, text_pos, 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
     return img_bgr, img_result, analysis_results 
 
-# --- KART OLUŞTURUCU (GÜNCELLENDİ: ARTIK MM GÖSTERİYOR) ---
+# --- HTML KART OLUŞTURUCU ---
 def create_card(side_name, info):
     if info['thickness_mm'] is None:
         return f"""
@@ -137,16 +157,16 @@ def create_card(side_name, info):
     </div>
     """
 
-# --- SIDEBAR ---
+# --- YAN MENÜ (SIDEBAR) ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=60) 
     st.title("Alveolar AI")
-    st.caption("Dental Radyoloji Asistanı v2.0 (MM)")
+    st.caption("Dental Radyoloji Asistanı v2.1")
     st.divider()
     
     st.subheader("📏 Kalibrasyon")
     
-    # 1. KATSAYI GİRİŞİ (BU OLMADAN HESAP OLMAZ)
+    # KATSAYI GİRİŞİ
     px_to_mm = st.number_input(
         "1 Piksel kaç mm?",
         min_value=0.001, 
@@ -154,25 +174,25 @@ with st.sidebar:
         value=0.100, 
         step=0.001,
         format="%.3f",
-        help="Röntgendeki bilinen bir referans uzunluğunu piksel sayısına bölerek bu katsayıyı bulun."
+        help="Röntgendeki referans uzunluğunu piksel sayısına bölerek bulun."
     )
     
-    st.subheader("⚙️ Karar Ayarları")
+    st.subheader("⚙️ Karar Mekanizması")
     
-    # 2. THRESHOLD SLIDER (ARTIK MM CİNSİNDEN)
-    # Varsayılan değer 5.0 mm (örnek)
+    # THRESHOLD (MM)
     thresh_mm = st.slider(
-        "Graft Karar Eşiği (mm)", 
+        "Graft Eşiği (mm)", 
         min_value=1.0, 
         max_value=15.0, 
         value=5.0, 
         step=0.5,
-        help="Kemik kalınlığı bu değerin (mm) altındaysa GRAFT GEREKLİ kararı verilir."
+        help="Kemik kalınlığı bu değerin altındaysa GRAFT GEREKLİ uyarısı verilir."
     )
-    st.info(f"Sınır: **{thresh_mm} mm**")
+    st.info(f"Sınır Değer: **{thresh_mm} mm**")
     
     st.divider()
     alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4)
+    st.caption("Dr. Muhammed ÇELİK")
 
 # --- ANA EKRAN ---
 st.title("🦷 Akıllı Kemik Analizi (Milimetrik)")
@@ -183,24 +203,27 @@ if uploaded_file:
     image = Image.open(uploaded_file)
     try:
         model = load_model("best.pt")
-    except:
-        st.error("Model yüklenemedi! 'best.pt' dosyasını kontrol edin.")
+    except Exception as e:
+        st.error(f"Model yüklenemedi! Dosyanın klasörde olduğundan emin olun. Hata: {e}")
         st.stop()
 
-    # Analiz (Yeni parametreleri gönderiyoruz)
+    # ANALİZİ BAŞLAT
+    # Parametreleri fonksiyona gönderiyoruz
     orig_img, proc_img, data = process_image(image, model, alpha, px_to_mm, thresh_mm)
     
+    # Renk Dönüşümleri (OpenCV BGR -> Web RGB)
     img1 = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
     img2 = cv2.cvtColor(proc_img, cv2.COLOR_BGR2RGB)
 
     st.divider()
 
-    # --- YERLEŞİM DÜZENİ ---
+    # --- YERLEŞİM (LAYOUT) ---
     col_left, col_right = st.columns([3, 1])
 
     with col_left:
         st.subheader("👁️ Görüntü Analizi")
         
+        # Slider Bileşeni (Sabit Soldan Başlatma: %2)
         if img1.shape == img2.shape:
             image_comparison(
                 img1=img1,
@@ -208,7 +231,7 @@ if uploaded_file:
                 label1="Orijinal",
                 label2="Analiz",
                 width=800, 
-                starting_position=2,
+                starting_position=2, # Slider en solda
                 show_labels=True,
                 make_responsive=True,
                 in_memory=True
@@ -217,12 +240,14 @@ if uploaded_file:
             st.image(img2, use_container_width=True)
 
     with col_right:
-        st.subheader("📋 MM Raporu")
+        st.subheader("📋 Ölçüm Raporu")
+        # Kartları oluşturup göster
         st.markdown(create_card("HASTA SAĞ", data["LEFT"]), unsafe_allow_html=True)
-        st.write("") 
+        st.write("") # Boşluk
         st.markdown(create_card("HASTA SOL", data["RIGHT"]), unsafe_allow_html=True)
 
 else:
+    # Boş Durum Ekranı
     st.markdown("""
     <div style="
         border: 2px dashed #ccc; 
@@ -232,6 +257,6 @@ else:
         color: gray;
         margin-top: 20px;">
         <h3>Röntgen Yükleyin</h3>
-        <p>Milimetrik ölçüm için dosya seçin</p>
+        <p>Milimetrik ölçüm için yukarıdan dosya seçin veya sürükleyin.</p>
     </div>
     """, unsafe_allow_html=True)
