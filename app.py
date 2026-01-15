@@ -6,6 +6,7 @@ from ultralytics import YOLO
 from alveolar_krest import alveolar_krest_analysis
 from streamlit_image_comparison import image_comparison
 
+# --- SAYFA YAPILANDIRMASI ---
 st.set_page_config(
     page_title="Alveolar AI (Klinik)",
     page_icon="🦷",
@@ -16,6 +17,7 @@ st.set_page_config(
 # --- CSS TASARIM (3 RENKLİ SİSTEM) ---
 st.markdown("""
 <style>
+    /* Kart Genel Yapısı */
     .metric-card {
         background-color: #ffffff;
         border-radius: 12px;
@@ -26,7 +28,7 @@ st.markdown("""
         color: #333333 !important;
     }
     
-    /* Renk Sınıfları */
+    /* Duruma Göre Renkli Kenarlıklar */
     .metric-card.success { border-left: 6px solid #4CAF50; } /* Yeşil */
     .metric-card.warning { border-left: 6px solid #FF9800; } /* Turuncu */
     .metric-card.danger  { border-left: 6px solid #F44336; } /* Kırmızı */
@@ -50,25 +52,30 @@ st.markdown("""
         padding: 6px 12px;
         border-radius: 20px;
         display: inline-block;
-        color: white !important; /* Etiket içi yazı beyaz */
+        color: white !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# --- MODEL YÜKLEME ---
 @st.cache_resource
 def load_model(path):
     return YOLO(path)
 
+# --- GÖRÜNTÜ İŞLEME ---
 def process_image(image_input, model, alpha_val, px_mm_val):
+    # PIL -> OpenCV (BGR)
     img_bgr = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
     h, w = img_bgr.shape[:2]
 
+    # Tahmin
     results_list = model.predict(img_bgr, conf=0.5)
     res = results_list[0]
 
+    # Maske Katmanı
     overlay = img_bgr.copy()
-    COLOR_SINUS = (0, 255, 255) 
-    COLOR_KRET  = (0, 0, 255)    
+    COLOR_SINUS = (0, 255, 255)  # Sarı
+    COLOR_KRET  = (0, 0, 255)    # Kırmızı
 
     if res.masks is not None:
         polys = res.masks.xy
@@ -78,11 +85,13 @@ def process_image(image_input, model, alpha_val, px_mm_val):
             if cls == 3: cv2.fillPoly(overlay, [pts], COLOR_SINUS)
             elif cls == 0: cv2.fillPoly(overlay, [pts], COLOR_KRET)
 
+    # Birleştirme (BURADA ALFA DEĞERİ KULLANILIYOR)
     img_result = cv2.addWeighted(overlay, alpha_val, img_bgr, 1 - alpha_val, 0)
 
-    # --- ANALİZ (Sadece katsayı gidiyor, threshold artık kodun içinde) ---
+    # Analiz
     analysis_results = alveolar_krest_analysis(res, img_result, px_to_mm_ratio=px_mm_val)
     
+    # Çizimler
     mid_x = w // 2
     cv2.line(img_result, (mid_x, 0), (mid_x, h), (200, 200, 200), 1) 
 
@@ -92,23 +101,26 @@ def process_image(image_input, model, alpha_val, px_mm_val):
             x, y_s, y_k = r["x_col"], r["sinus_y"], r["kret_y"]
             
             # Çizgiler
-            cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 3)
-            cv2.line(img_result, (x-25, y_s), (x+25, y_s), (255, 0, 0), 2)
-            cv2.line(img_result, (x-25, y_k), (x+25, y_k), (0, 0, 255), 2)
+            cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 3) 
+            cv2.line(img_result, (x-25, y_s), (x+25, y_s), (255, 0, 0), 2) 
+            cv2.line(img_result, (x-25, y_k), (x+25, y_k), (0, 0, 255), 2) 
 
-            # Yazı
+            # Resim Üzerine Yazı
             mm_val = r["thickness_mm"]
             text_label = f"{mm_val} mm"
             mid_y = (y_s + y_k) // 2
             text_pos = (x + 15, mid_y) 
 
+            # Siyah Dış Hat (Okunabilirlik için)
             cv2.putText(img_result, text_label, text_pos, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4, cv2.LINE_AA)
+            # Beyaz Yazı
             cv2.putText(img_result, text_label, text_pos, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
     return img_bgr, img_result, analysis_results 
 
+# --- KART OLUŞTURUCU ---
 def create_card(side_name, info):
     if info['thickness_mm'] is None:
         return f"""
@@ -122,7 +134,7 @@ def create_card(side_name, info):
     val_mm = info['thickness_mm']
     decision = info['decision']
     
-    # --- YENİ RENK MANTIĞI ---
+    # Renk Mantığı
     if decision == "LİFT GEREKMEZ":
         style_class = "success"
         bg_color = "#4CAF50" # Yeşil
@@ -146,11 +158,11 @@ def create_card(side_name, info):
     </div>
     """
 
-# --- SIDEBAR ---
+# --- SIDEBAR (YAN MENÜ) ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=60) 
     st.title("Alveolar AI")
-    st.caption("Dental Radyoloji Asistanı v3.0")
+    st.caption("Dental Radyoloji Asistanı v3.1")
     st.divider()
     
     st.subheader("📏 Kalibrasyon")
@@ -159,9 +171,6 @@ with st.sidebar:
         min_value=0.001, max_value=5.0, value=0.100, step=0.001, format="%.3f"
     )
     
-    st.divider()
-    
-    # Karar Kuralları Bilgi Notu (Slider yerine)
     st.subheader("📋 Klinik Protokol")
     st.info("""
     **≤ 5 mm:** Açık Lift
@@ -170,7 +179,13 @@ with st.sidebar:
     """)
     
     st.divider()
-    alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4)
+    
+    # --- GERİ GETİRİLEN ÖZELLİK ---
+    st.subheader("🖼️ Görünüm Ayarları")
+    alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4, step=0.05, help="Segmentasyonun ne kadar saydam olacağını ayarlar.")
+    # ------------------------------
+    
+    st.divider()
     st.caption("Dr. Muhammed ÇELİK")
 
 # --- ANA EKRAN ---
@@ -183,9 +198,10 @@ if uploaded_file:
     try:
         model = load_model("best.pt")
     except Exception as e:
-        st.error("Model yüklenemedi!")
+        st.error(f"Model yüklenemedi! Hata: {e}")
         st.stop()
 
+    # Alpha değerini buradan fonksiyona yolluyoruz
     orig_img, proc_img, data = process_image(image, model, alpha, px_to_mm)
     
     img1 = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
@@ -217,6 +233,6 @@ else:
     st.markdown("""
     <div style="border: 2px dashed #ccc; padding: 40px; border-radius: 10px; text-align: center; color: gray; margin-top: 20px;">
         <h3>Röntgen Yükleyin</h3>
-        <p>Otomatik Açık/Kapalı Lift Kararı</p>
+        <p>Otomatik Açık/Kapalı Lift Kararı ve Milimetrik Ölçüm</p>
     </div>
     """, unsafe_allow_html=True)
