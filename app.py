@@ -192,8 +192,7 @@ with st.sidebar:
     
     st.divider()
     alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4)
-    st.caption("Dr. Muhammed ÇELİK")
-
+    
 # --- ANA EKRAN ---
 st.title("🦷 Akıllı Kemik Analizi (Milimetrik)")
 
