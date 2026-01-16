@@ -6,6 +6,7 @@ from ultralytics import YOLO
 from alveolar_krest import alveolar_krest_analysis
 from streamlit_image_comparison import image_comparison
 
+# --- SAYFA YAPILANDIRMASI ---
 st.set_page_config(
     page_title="Alveolar AI (Multi-Point)",
     page_icon="🦷",
@@ -13,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS ---
+# --- CSS TASARIM ---
 st.markdown("""
 <style>
     .metric-card {
@@ -53,10 +54,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- MODEL ---
 @st.cache_resource
 def load_model(path):
     return YOLO(path)
 
+# --- GÖRÜNTÜ İŞLEME ---
 def process_image(image_input, model, alpha_val, px_mm_val):
     img_bgr = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
     h, w = img_bgr.shape[:2]
@@ -85,7 +88,7 @@ def process_image(image_input, model, alpha_val, px_mm_val):
     # --- ÇOKLU ÇİZİM DÖNGÜSÜ ---
     for side in ["LEFT", "RIGHT"]:
         data = analysis_results[side]
-        points = data["points"] # Artık bu bir liste
+        points = data["points"]
         
         if not points: continue
 
@@ -93,27 +96,32 @@ def process_image(image_input, model, alpha_val, px_mm_val):
             x, y_s, y_k = pt["coords"]
             mm_val = pt["mm"]
             
-            # Çizgiler
+            # 1. Dikey Ölçüm Çizgisi (Yeşil)
             cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 2)
-            # Sınır çizgilerini biraz küçültelim ki karışmasın
+            
+            # 2. Yatay Sınır Çizgileri (Mavi ve Kırmızı)
             cv2.line(img_result, (x-10, y_s), (x+10, y_s), (255, 0, 0), 2) 
             cv2.line(img_result, (x-10, y_k), (x+10, y_k), (0, 0, 255), 2) 
 
-            # Yazı (Çakışmayı önlemek için Y pozisyonunu hafif kaydırabiliriz)
+            # 3. METİN YAZDIRMA (GÜNCELLENDİ)
             text_label = f"{mm_val}"
-            mid_y = (y_s + y_k) // 2
             
-            # Yazıyı çizginin sağına koy
-            text_pos = (x + 5, mid_y)
+            # Yazının konumu:
+            # y_k: Kret (Alt) noktasıdır. +25 diyerek çizginin altına indiriyoruz.
+            # x - 20: Yazıyı çizginin altına ortalamak için sola kaydırıyoruz.
+            text_pos = (x - 20, y_k + 25)
             
-            # Küçük font ile değerleri yaz
+            # Siyah dış hat (Outline) - Okunabilirlik için
             cv2.putText(img_result, text_label, text_pos, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+            
+            # Beyaz asıl yazı
             cv2.putText(img_result, text_label, text_pos, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
     return img_bgr, img_result, analysis_results 
 
+# --- KART OLUŞTURUCU ---
 def create_card(side_name, info):
     min_val = info['min_mm']
     decision = info['global_decision']
@@ -153,10 +161,11 @@ def create_card(side_name, info):
     </div>
     """
 
+# --- YAN MENÜ ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=60) 
     st.title("Alveolar AI")
-    st.caption("Dental Radyoloji Asistanı v4.0")
+    st.caption("Dental Radyoloji Asistanı v4.1")
     st.divider()
     
     st.subheader("📏 Ayarlar")
@@ -169,6 +178,7 @@ with st.sidebar:
     st.divider()
     st.caption("Dr. Muhammed ÇELİK")
 
+# --- ANA EKRAN ---
 st.title("🦷 Çoklu Nokta Analizi")
 
 uploaded_file = st.file_uploader("", type=["jpg", "png", "jpeg"])
