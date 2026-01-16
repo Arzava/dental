@@ -23,7 +23,12 @@ def keep_half(mask, side):
     else: out[:, :mid] = 0
     return out
 
-def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=30):
+def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
+    """
+    DÜZELTME: window_size 30 -> 12'ye düşürüldü.
+    Böylece dar kemik alanları (3-5mm genişliğindeki yerler) 
+    komşu boşluklardan etkilenip yukarı çekilmeyecek.
+    """
     raw_bottoms = []
     for x in range(x_min, x_max):
         ys = np.where(kret_mask[:, x] > 0)[0]
@@ -44,11 +49,6 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=30):
     return smoothed_bottoms
 
 def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=1.0, height_tolerance_px=80):
-    """
-    DENGELİ AYARLAR:
-    slope_threshold=1.0 -> 0.6 çok katıydı, 1.0 ideal.
-    height_tolerance_px=80 -> Biraz daha esnek.
-    """
     sinus_bottoms = []
     valid_indices = [] 
     
@@ -63,12 +63,12 @@ def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=1.0, h
 
     y_vals = np.array(sinus_bottoms)
     
-    # 1. Yükseklik Filtresi
+    # Yükseklik Filtresi
     deepest_y = np.max(y_vals)
     cutoff_y = deepest_y - height_tolerance_px
     is_in_height_range = y_vals > cutoff_y
     
-    # 2. Eğim (Slope) Filtresi
+    # Eğim Filtresi
     kernel_size = 15
     if len(y_vals) > kernel_size:
         y_smooth = np.convolve(y_vals, np.ones(kernel_size)/kernel_size, mode='same')
@@ -92,7 +92,6 @@ def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=1.0, h
     for k, g in groupby(enumerate(floor_indices), lambda ix: ix[0] - ix[1]):
         segments.append(list(map(itemgetter(1), g)))
         
-    # En uzun düz parçayı al
     longest_segment_indices = max(segments, key=len)
     final_range = valid_indices_arr[longest_segment_indices]
     
@@ -106,11 +105,9 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     sinus_mask = keep_half(sinus_mask, side)
     kret_mask  = keep_half(kret_mask,  side)
     
-    # --- ORTA HAT FİLTRESİ (Yumuşatıldı) ---
-    # Toplam genişliğin sadece %20'sini (ortadan) iptal et.
-    # Önceki %40 çok fazlaydı.
+    # ORTA HAT FİLTRESİ (%10)
     center_x = w // 2
-    dead_zone_width = int(w * 0.10) # Merkezden sağa/sola %10
+    dead_zone_width = int(w * 0.10) 
     safe_zone_start = center_x - dead_zone_width
     safe_zone_end   = center_x + dead_zone_width
 
@@ -118,7 +115,6 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     has_kret = np.any(kret_mask > 0, axis=0)
     valid_cols_mask = np.logical_and(has_sinus, has_kret)
     
-    # Orta hattı maskeden sil
     valid_cols_mask[safe_zone_start:safe_zone_end] = False
     
     common_cols = np.where(valid_cols_mask)[0]
@@ -127,11 +123,11 @@ def compute_multi_thickness(res, image, side, num_segments=3):
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
-    # --- EĞİM VE DUVAR FİLTRESİ (Yumuşatıldı) ---
+    # EĞİM VE DUVAR FİLTRESİ
     valid_x_range = get_valid_sinus_floor_range(
         sinus_mask, x_min, x_max, 
-        slope_threshold=1.0,    # Gevşetildi
-        height_tolerance_px=80  # Gevşetildi
+        slope_threshold=1.0, 
+        height_tolerance_px=80
     )
     
     if not valid_x_range: return []
@@ -140,12 +136,13 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     real_x_max = max(valid_x_range)
     width = real_x_max - real_x_min
     
-    if width < 10: return [] # Çok küçük parça kalırsa ölçme
+    if width < 10: return []
 
-    smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=30)
+    # --- KRİTİK DEĞİŞİKLİK: window_size=12 ---
+    # Dar kemik alanlarını kaybetmemek için filtre daraltıldı.
+    smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12)
     
     measurements = []
-    # Alan darsa segment sayısını düşür
     real_num_segments = num_segments
     if width < 60: real_num_segments = 1
     
@@ -163,7 +160,6 @@ def compute_multi_thickness(res, image, side, num_segments=3):
             if not valid_cols_mask[x_global]: continue
 
             ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
-            # Slope filtresinden geçmiş olsa bile, range kontrolü
             if x_global < real_x_min or x_global > real_x_max: continue
             if ys_s.size == 0: continue
 
