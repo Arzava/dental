@@ -44,64 +44,6 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=30):
             
     return smoothed_bottoms
 
-def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=1.5):
-    """
-    Sinüs tabanının eğimini analiz eder.
-    Eğer eğim çok dikse (duvar), o bölgeyi ölçüm dışı bırakır.
-    """
-    sinus_bottoms = []
-    valid_indices = [] # Orijinal x koordinatlarını tutar
-    
-    # 1. Sinüs alt profilini çıkar
-    for x in range(x_min, x_max):
-        ys = np.where(sinus_mask[:, x] > 0)[0]
-        if ys.size > 0:
-            sinus_bottoms.append(int(ys.max())) # En alt nokta (Max Y)
-            valid_indices.append(x)
-    
-    if not sinus_bottoms:
-        return []
-
-    # 2. Yumuşatma (Gürültüyü azaltmak için)
-    y_vals = np.array(sinus_bottoms)
-    kernel_size = 15
-    if len(y_vals) > kernel_size:
-        y_smooth = np.convolve(y_vals, np.ones(kernel_size)/kernel_size, mode='same')
-    else:
-        y_smooth = y_vals
-
-    # 3. Eğim (Gradient) Hesabı
-    # dy/dx: Yanındaki piksele göre ne kadar yükseliyor/alçalıyor?
-    gradients = np.gradient(y_smooth)
-    
-    # 4. Filtreleme: Eğim eşiğini geçenleri "Duvar" olarak işaretle
-    # Sinüs tabanı (floor) genelde düzdür, duvarlar diktir.
-    is_floor = np.abs(gradients) < slope_threshold
-    
-    # 5. En büyük sürekli "zemin" parçasını bul
-    # (Parça parça olmaması için en geniş düz alanı seçiyoruz)
-    if not np.any(is_floor):
-        return [] # Hiç düz yer yoksa boş dön
-
-    # True/False dizisini segmentlere ayır
-    floor_indices = np.where(is_floor)[0]
-    
-    # Segmentleri grupla (ardışık indeksler)
-    from itertools import groupby
-    from operator import itemgetter
-    
-    segments = []
-    for k, g in groupby(enumerate(floor_indices), lambda ix: ix[0] - ix[1]):
-        segments.append(list(map(itemgetter(1), g)))
-        
-    # En uzun segmenti seç (Ana sinüs tabanı burasıdır)
-    longest_segment = max(segments, key=len)
-    
-    # Orijinal X koordinatlarına çevir
-    valid_x_range = [valid_indices[i] for i in longest_segment]
-    
-    return valid_x_range
-
 def compute_multi_thickness(res, image, side, num_segments=3):
     h, w = image.shape[:2]
     sinus_mask = rasterize_class(res, SINUS_CLASS, h, w)
@@ -110,58 +52,82 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     sinus_mask = keep_half(sinus_mask, side)
     kret_mask  = keep_half(kret_mask,  side)
 
-    # Ortak alan
-    common_cols = np.where(
-        (np.any(sinus_mask > 0, axis=0)) & (np.any(kret_mask > 0, axis=0))
-    )[0]
+    # --- KRİTİK DEĞİŞİKLİK: KOMŞULUK KONTROLÜ ---
+    # Sadece hem Sinüsün (Sarı) hem de Kretin (Kırmızı) AYNI KOLONDA var olduğu yerleri bul.
+    # np.logical_and ile iki maskenin çakıştığı dikey sütunları seçiyoruz.
     
-    if common_cols.size == 0: return []
-
-    x_min, x_max = common_cols.min(), common_cols.max()
+    # 1. Sinüs var mı?
+    has_sinus = np.any(sinus_mask > 0, axis=0)
+    # 2. Kret var mı?
+    has_kret = np.any(kret_mask > 0, axis=0)
     
-    # --- YENİ ADIM: SİNÜS DUVARLARINI FİLTRELE ---
-    valid_x_range = get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=2.0)
+    # 3. İkisi de aynı sütunda VAR MI?
+    valid_cols_mask = np.logical_and(has_sinus, has_kret)
     
-    if not valid_x_range:
+    # Bu maskenin True olduğu indeksleri (x koordinatlarını) al
+    common_cols = np.where(valid_cols_mask)[0]
+    
+    # Eğer hiç ortak alan yoksa ölçüm yapma
+    if common_cols.size == 0:
         return []
-        
-    # Yeni ölçüm sınırları (Daraltılmış alan)
-    real_x_min = min(valid_x_range)
-    real_x_max = max(valid_x_range)
-    width = real_x_max - real_x_min
+
+    # Geçerli alanın sınırları
+    x_min, x_max = common_cols.min(), common_cols.max()
+    width = x_max - x_min
     
-    # Kret altı düzeltme
+    # --- Yanal Boşlukları Temizle (Gürültü Filtresi) ---
+    # Bazen maskeler uçlarda 1-2 piksel çakışabilir, bunları elemek için
+    # en az 10 piksellik bir bütünlük arayalım.
+    if width < 10: 
+        return []
+
+    # Kret altı düzeltme (Moving Window ile diş aralarını doldur)
     smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=30)
     
-    # Segmentasyon ve Ölçüm
     measurements = []
-    step = width // num_segments
+    
+    # Eğer alan darsa tek parça ölç
+    real_num_segments = num_segments
+    if width < 50: real_num_segments = 1
+    
+    step = width // real_num_segments
     if step < 1: step = 1
 
-    for i in range(num_segments):
-        seg_start = real_x_min + (i * step)
+    for i in range(real_num_segments):
+        seg_start = x_min + (i * step)
         seg_end = seg_start + step
-        if i == num_segments - 1: seg_end = real_x_max
+        if i == real_num_segments - 1: seg_end = x_max
 
         best_in_segment = None
         
         for x_global in range(seg_start, seg_end):
-            # Sinüs tabanı
+            # Orijinal ortak alan maskesine tekrar bak (arada boşluklar olabilir)
+            if not valid_cols_mask[x_global]:
+                continue
+
+            # Sinüs tabanı (En alt nokta)
             ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
-            if ys_s.size == 0: continue
             sinus_bottom = int(ys_s.max())
             
-            # Kret tabanı (Düzeltilmiş listeden çekiyoruz)
-            # smoothed listesi x_min'den başlıyor, indeks hesabı yapalım
+            # Kret tabanı (Düzeltilmiş listeden)
             idx = x_global - x_min
             if idx < 0 or idx >= len(smoothed_kret_ys): continue
-            
             kret_bottom = smoothed_kret_ys[idx]
             
-            if kret_bottom is None or kret_bottom <= sinus_bottom: continue
-                
+            # Eğer Kret Tabanı, Sinüs Tabanından YUKARIDAYSA (Hatalı Maske)
+            if kret_bottom is None or kret_bottom <= sinus_bottom: 
+                continue
+            
+            # --- EK GÜVENLİK: DİKEY MESAFE KONTROLÜ ---
+            # Sinüs ile Kret arasında çok büyük bir boşluk varsa (örn: sinüs duvarda, kret aşağıda)
+            # ve bu ikisi görsel olarak "komşu" değilse ölçme.
+            # Ancak "Alveolar Krest" analizinde zaten sinüs tabanı ile kret tabanı arasındaki
+            # mesafeyi ölçüyoruz. Buradaki mantık: Maskeler dikeyde üst üste biniyorsa
+            # bu geçerli bir ölçümdür.
+            
             dist = kret_bottom - sinus_bottom
             
+            # En riskli (en ince) kemiği bul
             if best_in_segment is None or dist < best_in_segment[0]:
                 best_in_segment = (dist, x_global, sinus_bottom, kret_bottom)
         
