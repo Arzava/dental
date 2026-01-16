@@ -92,32 +92,38 @@ def process_image(image_input, model, alpha_val, px_mm_val):
         
         if not points: continue
 
+        # 'i' değişkeni kaçıncı nokta olduğunu tutar (0, 1, 2...)
         for i, pt in enumerate(points):
             x, y_s, y_k = pt["coords"]
             mm_val = pt["mm"]
             
-            # 1. Dikey Ölçüm Çizgisi (Yeşil)
+            # Çizgiler
             cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 2)
-            
-            # 2. Yatay Sınır Çizgileri (Mavi ve Kırmızı)
             cv2.line(img_result, (x-10, y_s), (x+10, y_s), (255, 0, 0), 2) 
             cv2.line(img_result, (x-10, y_k), (x+10, y_k), (0, 0, 255), 2) 
 
-            # 3. METİN YAZDIRMA (GÜNCELLENDİ)
+            # --- METİN YAZDIRMA (ZIG-ZAG DÜZENİ) ---
             text_label = f"{mm_val}"
             
-            # Yazının konumu:
-            # y_k: Kret (Alt) noktasıdır. +25 diyerek çizginin altına indiriyoruz.
-            # x - 20: Yazıyı çizginin altına ortalamak için sola kaydırıyoruz.
-            text_pos = (x - 20, y_k + 25)
+            # Yazıların üst üste binmesini önlemek için "i" değerine göre
+            # aşağıya doğru kaydırıyoruz. (Modüler aritmetik: 0, 1, 2 döngüsü)
+            # 1. Yazı: +25px
+            # 2. Yazı: +55px
+            # 3. Yazı: +85px
+            vertical_offset = 25 + (i % 3) * 30 
             
-            # Siyah dış hat (Outline) - Okunabilirlik için
+            text_pos = (x - 20, y_k + vertical_offset)
+            
+            # Siyah dış hat
             cv2.putText(img_result, text_label, text_pos, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
-            
-            # Beyaz asıl yazı
+            # Beyaz yazı
             cv2.putText(img_result, text_label, text_pos, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+            
+            # Hangi çizgiye ait olduğunu göstermek için ince bir gri kılavuz çizgi ekleyelim
+            if vertical_offset > 25:
+                cv2.line(img_result, (x, y_k), (x, y_k + vertical_offset - 10), (200, 200, 200), 1)
 
     return img_bgr, img_result, analysis_results 
 
@@ -161,11 +167,11 @@ def create_card(side_name, info):
     </div>
     """
 
-# --- YAN MENÜ ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=60) 
     st.title("Alveolar AI")
-    st.caption("Dental Radyoloji Asistanı v4.1")
+    st.caption("Dental Radyoloji Asistanı v4.2")
     st.divider()
     
     st.subheader("📏 Ayarlar")
