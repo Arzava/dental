@@ -6,15 +6,14 @@ from ultralytics import YOLO
 from alveolar_krest import alveolar_krest_analysis
 from streamlit_image_comparison import image_comparison
 
-# --- SAYFA YAPILANDIRMASI ---
 st.set_page_config(
-    page_title="Alveolar AI (Klinik)",
+    page_title="Alveolar AI (Multi-Point)",
     page_icon="🦷",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CSS TASARIM ---
+# --- CSS ---
 st.markdown("""
 <style>
     .metric-card {
@@ -54,12 +53,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- MODEL ---
 @st.cache_resource
 def load_model(path):
     return YOLO(path)
 
-# --- GÖRÜNTÜ İŞLEME ---
 def process_image(image_input, model, alpha_val, px_mm_val):
     img_bgr = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
     h, w = img_bgr.shape[:2]
@@ -68,8 +65,8 @@ def process_image(image_input, model, alpha_val, px_mm_val):
     res = results_list[0]
 
     overlay = img_bgr.copy()
-    COLOR_SINUS = (0, 255, 255)  
-    COLOR_KRET  = (0, 0, 255)    
+    COLOR_SINUS = (0, 255, 255)
+    COLOR_KRET  = (0, 0, 255)
 
     if res.masks is not None:
         polys = res.masks.xy
@@ -80,36 +77,48 @@ def process_image(image_input, model, alpha_val, px_mm_val):
             elif cls == 0: cv2.fillPoly(overlay, [pts], COLOR_KRET)
 
     img_result = cv2.addWeighted(overlay, alpha_val, img_bgr, 1 - alpha_val, 0)
-
     analysis_results = alveolar_krest_analysis(res, img_result, px_to_mm_ratio=px_mm_val)
     
     mid_x = w // 2
     cv2.line(img_result, (mid_x, 0), (mid_x, h), (200, 200, 200), 1) 
 
+    # --- ÇOKLU ÇİZİM DÖNGÜSÜ ---
     for side in ["LEFT", "RIGHT"]:
-        r = analysis_results[side]
-        if r["thickness_px"] is not None:
-            x, y_s, y_k = r["x_col"], r["sinus_y"], r["kret_y"]
+        data = analysis_results[side]
+        points = data["points"] # Artık bu bir liste
+        
+        if not points: continue
+
+        for i, pt in enumerate(points):
+            x, y_s, y_k = pt["coords"]
+            mm_val = pt["mm"]
             
-            cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 3) 
-            cv2.line(img_result, (x-25, y_s), (x+25, y_s), (255, 0, 0), 2) 
-            cv2.line(img_result, (x-25, y_k), (x+25, y_k), (0, 0, 255), 2) 
+            # Çizgiler
+            cv2.line(img_result, (x, y_s), (x, y_k), (0, 255, 0), 2)
+            # Sınır çizgilerini biraz küçültelim ki karışmasın
+            cv2.line(img_result, (x-10, y_s), (x+10, y_s), (255, 0, 0), 2) 
+            cv2.line(img_result, (x-10, y_k), (x+10, y_k), (0, 0, 255), 2) 
 
-            mm_val = r["thickness_mm"]
-            text_label = f"{mm_val} mm"
+            # Yazı (Çakışmayı önlemek için Y pozisyonunu hafif kaydırabiliriz)
+            text_label = f"{mm_val}"
             mid_y = (y_s + y_k) // 2
-            text_pos = (x + 15, mid_y) 
-
+            
+            # Yazıyı çizginin sağına koy
+            text_pos = (x + 5, mid_y)
+            
+            # Küçük font ile değerleri yaz
             cv2.putText(img_result, text_label, text_pos, 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
             cv2.putText(img_result, text_label, text_pos, 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
     return img_bgr, img_result, analysis_results 
 
-# --- KART OLUŞTURUCU ---
 def create_card(side_name, info):
-    if info['thickness_mm'] is None:
+    min_val = info['min_mm']
+    decision = info['global_decision']
+    
+    if min_val is None:
         return f"""
         <div class="metric-card danger">
             <div class="metric-title">{side_name}</div>
@@ -117,9 +126,6 @@ def create_card(side_name, info):
             <div class="metric-status" style="background:#ffebee; color:#c62828;">Ölçüm Yok</div>
         </div>
         """
-    
-    val_mm = info['thickness_mm']
-    decision = info['decision']
     
     if decision == "LİFT GEREKMEZ":
         style_class = "success"
@@ -136,46 +142,34 @@ def create_card(side_name, info):
     
     return f"""
     <div class="metric-card {style_class}">
-        <div class="metric-title">{side_name}</div>
-        <div class="metric-value">{val_mm} <span style="font-size:1rem; color:#999">mm</span></div>
+        <div class="metric-title">{side_name} (En Kritik)</div>
+        <div class="metric-value">{min_val} <span style="font-size:1rem; color:#999">mm</span></div>
         <div class="metric-status" style="background:{bg_color};">
             {icon} {decision}
+        </div>
+        <div style="font-size:0.8rem; color:#666; margin-top:5px;">
+            (Bölgedeki en düşük ölçüm)
         </div>
     </div>
     """
 
-# --- SIDEBAR (DÜZENLENDİ) ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=60) 
     st.title("Alveolar AI")
-    st.caption("Dental Radyoloji Asistanı v3.2")
+    st.caption("Dental Radyoloji Asistanı v4.0")
     st.divider()
     
-    st.subheader("📏 Ayarlar & Kalibrasyon")
-    
-    # 1. MM DÖNÜŞÜMÜ
-    px_to_mm = st.number_input(
-        "1 Piksel kaç mm?",
-        min_value=0.001, max_value=5.0, value=0.100, step=0.001, format="%.3f"
-    )
-
-    # 2. MASKE OPAKLIĞI (HEMEN ALTINA TAŞINDI)
+    st.subheader("📏 Ayarlar")
+    px_to_mm = st.number_input("1 Piksel kaç mm?", 0.001, 5.0, 0.100, 0.001, "%.3f")
     alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4, step=0.05)
     
     st.divider()
-    
-    st.subheader("📋 Klinik Protokol")
-    st.info("""
-    **≤ 5 mm:** Açık Lift
-    **6 - 8 mm:** Kapalı Lift
-    **≥ 8 mm:** Lift Gerekmez
-    """)
-    
+    st.subheader("📋 Protokol")
+    st.info("≤5mm: Açık | 6-8mm: Kapalı | ≥8mm: Gerekmez")
     st.divider()
     st.caption("Dr. Muhammed ÇELİK")
 
-# --- ANA EKRAN ---
-st.title("🦷 Akıllı Sinüs-Kret Analizi")
+st.title("🦷 Çoklu Nokta Analizi")
 
 uploaded_file = st.file_uploader("", type=["jpg", "png", "jpeg"])
 
@@ -183,8 +177,8 @@ if uploaded_file:
     image = Image.open(uploaded_file)
     try:
         model = load_model("best.pt")
-    except Exception as e:
-        st.error(f"Model yüklenemedi! Hata: {e}")
+    except:
+        st.error("Model yüklenemedi!")
         st.stop()
 
     orig_img, proc_img, data = process_image(image, model, alpha, px_to_mm)
@@ -201,7 +195,7 @@ if uploaded_file:
         if img1.shape == img2.shape:
             image_comparison(
                 img1=img1, img2=img2,
-                label1="Orijinal", label2="Analiz",
+                label1="Orijinal", label2="Çoklu Analiz",
                 width=800, starting_position=2,
                 show_labels=True, make_responsive=True, in_memory=True
             )
@@ -209,7 +203,7 @@ if uploaded_file:
             st.image(img2, use_container_width=True)
 
     with col_right:
-        st.subheader("📋 Klinik Rapor")
+        st.subheader("📋 Kritik Rapor")
         st.markdown(create_card("HASTA SAĞ", data["LEFT"]), unsafe_allow_html=True)
         st.write("") 
         st.markdown(create_card("HASTA SOL", data["RIGHT"]), unsafe_allow_html=True)
@@ -218,6 +212,6 @@ else:
     st.markdown("""
     <div style="border: 2px dashed #ccc; padding: 40px; border-radius: 10px; text-align: center; color: gray; margin-top: 20px;">
         <h3>Röntgen Yükleyin</h3>
-        <p>Otomatik Açık/Kapalı Lift Kararı ve Milimetrik Ölçüm</p>
+        <p>Otomatik Bölgesel Tarama ve Çoklu Ölçüm</p>
     </div>
     """, unsafe_allow_html=True)
