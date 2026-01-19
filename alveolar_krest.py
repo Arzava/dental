@@ -24,7 +24,6 @@ def keep_half(mask, side):
     return out
 
 def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
-    """Kret yüzeyini yumuşatır (diş kökü boşluklarını doldurur)."""
     raw_bottoms = []
     for x in range(x_min, x_max):
         ys = np.where(kret_mask[:, x] > 0)[0]
@@ -45,7 +44,6 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
     return smoothed_bottoms
 
 def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=1.0, height_tolerance_px=80):
-    """Sinüs duvarlarını ve eğimli yüzeyleri filtreler."""
     sinus_bottoms = []
     valid_indices = [] 
     
@@ -100,7 +98,7 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     sinus_mask = keep_half(sinus_mask, side)
     kret_mask  = keep_half(kret_mask,  side)
     
-    # --- 1. ORTA HAT FİLTRESİ ---
+    # ORTA HAT FİLTRESİ
     center_x = w // 2
     dead_zone_width = int(w * 0.10) 
     safe_zone_start = center_x - dead_zone_width
@@ -116,7 +114,7 @@ def compute_multi_thickness(res, image, side, num_segments=3):
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
-    # --- 2. DUVAR VE EĞİM FİLTRESİ ---
+    # EĞİM VE DUVAR FİLTRESİ
     valid_x_range = get_valid_sinus_floor_range(
         sinus_mask, x_min, x_max, 
         slope_threshold=1.0, 
@@ -129,62 +127,63 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     real_x_max = max(valid_x_range)
     width = real_x_max - real_x_min
     
-    if width < 10: return [] # Çok dar alan
+    if width < 10: return []
 
     smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12)
     
     measurements = []
 
-    # --- 3. YENİ ZORUNLU BÖLGE (STRICT SECTORING) MANTIĞI ---
+    # --- YENİ YÖNTEM: KONUMSAL ÖRNEKLEME (POSITIONAL SAMPLING) ---
+    # En küçüğü aramak yerine, alanın %20, %50 ve %80'indeki noktalara bak.
     
-    # Eğer alan çok darsa (<50px) tek bir ölçüm al ve çık
     if width < 50:
-        sectors = [(real_x_min, real_x_max)]
+        # Alan darsa sadece ortaya bak (%50)
+        target_indices = [0.5]
     else:
-        # Alanı matematiksel olarak eşit 3 parçaya böl
-        # int() kullanarak tam sayı sınırları belirliyoruz
-        p1 = real_x_min
-        p2 = real_x_min + int(width * 0.33)
-        p3 = real_x_min + int(width * 0.66)
-        p4 = real_x_max
+        # Alan genişse Başa, Ortaya ve Sona bak
+        # Kenarlardan %20 içeriden başlıyoruz ki maske ucundaki hataları almayalım.
+        target_indices = [0.20, 0.50, 0.80]
         
-        # Sektörler: [Baş-33%], [33%-66%], [66%-Son]
-        sectors = [
-            (p1, p2),
-            (p2, p3),
-            (p3, p4)
-        ]
-
-    # Her sektör için KENDİ İÇİNDEKİ en düşük noktayı bul
-    for s_start, s_end in sectors:
-        best_in_sector = None
+    for ratio in target_indices:
+        # Hedef X koordinatını hesapla
+        target_x = int(real_x_min + width * ratio)
         
-        # Sektör içindeki her pikseli tara
-        for x_global in range(s_start, s_end):
-            # Maske ve Duvar Filtresi Kontrolü
-            if not valid_cols_mask[x_global]: continue
-            if x_global < real_x_min or x_global > real_x_max: continue
-
-            ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
-            if ys_s.size == 0: continue
-
-            sinus_bottom = int(ys_s.max())
-            
-            idx = x_global - x_min
-            if idx < 0 or idx >= len(smoothed_kret_ys): continue
-            kret_bottom = smoothed_kret_ys[idx]
-            
-            if kret_bottom is None or kret_bottom <= sinus_bottom: continue
-            
-            dist = kret_bottom - sinus_bottom
-            
-            # Sektör içi minimumu bul
-            if best_in_sector is None or dist < best_in_sector[0]:
-                best_in_sector = (dist, x_global, sinus_bottom, kret_bottom)
+        # Hedeflenen X noktası slope filtresiyle silinmiş olabilir.
+        # Bu yüzden o noktaya EN YAKIN geçerli X'i bulmamız lazım.
         
-        # Eğer bu sektörde geçerli bir nokta bulunduysa listeye ekle
-        if best_in_sector:
-            measurements.append(best_in_sector)
+        # valid_x_range bir liste, bunu numpy array yapalım hızlı arama için
+        valid_xs = np.array(valid_x_range)
+        
+        # Mutlak farkın en az olduğu indeksi bul
+        idx = (np.abs(valid_xs - target_x)).argmin()
+        nearest_valid_x = valid_xs[idx]
+        
+        # Eğer en yakın geçerli nokta, hedeflediğimiz yerden çok uzaktaysa (örn > 20px)
+        # demek ki orada büyük bir boşluk/duvar var, ölçüm alma.
+        if abs(nearest_valid_x - target_x) > 20:
+            continue
+            
+        x_global = nearest_valid_x
+        
+        # Şimdi ölçümü yap
+        if not valid_cols_mask[x_global]: continue
+
+        ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
+        if ys_s.size == 0: continue
+
+        sinus_bottom = int(ys_s.max())
+        
+        # Kret tabanı
+        idx_k = x_global - x_min
+        if idx_k < 0 or idx_k >= len(smoothed_kret_ys): continue
+        kret_bottom = smoothed_kret_ys[idx_k]
+        
+        if kret_bottom is None or kret_bottom <= sinus_bottom: continue
+        
+        dist = kret_bottom - sinus_bottom
+        
+        # Noktayı kaydet
+        measurements.append((dist, x_global, sinus_bottom, kret_bottom))
             
     return measurements
 
