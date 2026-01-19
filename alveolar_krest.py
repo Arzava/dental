@@ -25,9 +25,7 @@ def keep_half(mask, side):
 
 def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
     """
-    DÜZELTME: window_size 30 -> 12'ye düşürüldü.
-    Böylece dar kemik alanları (3-5mm genişliğindeki yerler) 
-    komşu boşluklardan etkilenip yukarı çekilmeyecek.
+    Diş kökü boşluklarını doldurmak için 12 piksellik pencere.
     """
     raw_bottoms = []
     for x in range(x_min, x_max):
@@ -63,12 +61,10 @@ def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=1.0, h
 
     y_vals = np.array(sinus_bottoms)
     
-    # Yükseklik Filtresi
     deepest_y = np.max(y_vals)
     cutoff_y = deepest_y - height_tolerance_px
     is_in_height_range = y_vals > cutoff_y
     
-    # Eğim Filtresi
     kernel_size = 15
     if len(y_vals) > kernel_size:
         y_smooth = np.convolve(y_vals, np.ones(kernel_size)/kernel_size, mode='same')
@@ -114,11 +110,9 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     has_sinus = np.any(sinus_mask > 0, axis=0)
     has_kret = np.any(kret_mask > 0, axis=0)
     valid_cols_mask = np.logical_and(has_sinus, has_kret)
-    
     valid_cols_mask[safe_zone_start:safe_zone_end] = False
     
     common_cols = np.where(valid_cols_mask)[0]
-    
     if common_cols.size == 0: return []
 
     x_min, x_max = common_cols.min(), common_cols.max()
@@ -138,25 +132,39 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     
     if width < 10: return []
 
-    # --- KRİTİK DEĞİŞİKLİK: window_size=12 ---
-    # Dar kemik alanlarını kaybetmemek için filtre daraltıldı.
     smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12)
     
     measurements = []
-    real_num_segments = num_segments
-    if width < 60: real_num_segments = 1
+
+    # --- YENİ STRATEJİ: AYRIK PENCERELER (Baş - Orta - Son) ---
+    # Eğer alan yeterince genişse (>60px), zorla ayrıştırılmış 3 bölgeye bak.
+    # Değilse tek bölgeye bak.
     
-    step = width // real_num_segments
-    if step < 1: step = 1
-
-    for i in range(real_num_segments):
-        seg_start = real_x_min + (i * step)
-        seg_end = seg_start + step
-        if i == real_num_segments - 1: seg_end = real_x_max
-
-        best_in_segment = None
+    zones = []
+    
+    if width < 60:
+        # Alan çok dar, tek bir ölçüm al (Tamamı)
+        zones.append((real_x_min, real_x_max))
+    else:
+        # Alan geniş, 3 ayrık pencere tanımla
+        # Pencere genişliği: Toplam genişliğin %25'i
+        zone_w = int(width * 0.25)
         
-        for x_global in range(seg_start, seg_end):
+        # 1. BAŞ (START): İlk %25
+        zones.append((real_x_min, real_x_min + zone_w))
+        
+        # 2. ORTA (MID): Tam ortadaki %25
+        mid_center = real_x_min + width // 2
+        zones.append((mid_center - zone_w // 2, mid_center + zone_w // 2))
+        
+        # 3. SON (END): Son %25
+        zones.append((real_x_max - zone_w, real_x_max))
+
+    # Tanımlanan her bölge (zone) içinde EN İNCE kemiği bul
+    for z_start, z_end in zones:
+        best_in_zone = None
+        
+        for x_global in range(z_start, z_end):
             if not valid_cols_mask[x_global]: continue
 
             ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
@@ -173,11 +181,11 @@ def compute_multi_thickness(res, image, side, num_segments=3):
             
             dist = kret_bottom - sinus_bottom
             
-            if best_in_segment is None or dist < best_in_segment[0]:
-                best_in_segment = (dist, x_global, sinus_bottom, kret_bottom)
+            if best_in_zone is None or dist < best_in_zone[0]:
+                best_in_zone = (dist, x_global, sinus_bottom, kret_bottom)
         
-        if best_in_segment:
-            measurements.append(best_in_segment)
+        if best_in_zone:
+            measurements.append(best_in_zone)
             
     return measurements
 
