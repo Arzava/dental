@@ -43,14 +43,18 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
             
     return smoothed_bottoms
 
-def get_sinus_floor_boundaries_hybrid(sinus_mask, x_min, x_max):
+def get_sinus_floor_boundaries_finetuned(sinus_mask, x_min, x_max):
     """
-    HİBRİT SINIR TESPİTİ:
-    Hem yükseklik hem de eğim kontrolü yapar.
-    - Kavisli ceplere izin verir (Yükseklik toleransı yüksek).
-    - Dik duvarları hemen keser (Eğim toleransı düşük).
+    FINE-TUNING YAPILMIŞ HİBRİT SINIR TESPİTİ
+    Amaç: Derin cepleri (kavisleri) koru ama dik duvarları kes.
+    Yöntem: 
+    1. Profili "ütüle" (smooth) ki anlık hatalar yanıltmasın.
+    2. Merkezden dışa doğru yürü.
+    3. Yükseklik 45px'i geçerse VEYA Eğim (Slope) 0.6'yı (duvar açısı) geçerse dur.
+    4. Hata durumunda 'Güvenli Mod' (30px) devreye girer.
     """
-    # 1. Profili Çıkar
+    
+    # 1. Ham Profili Çıkar
     sinus_profile = []
     valid_xs = []
     for x in range(x_min, x_max):
@@ -62,69 +66,101 @@ def get_sinus_floor_boundaries_hybrid(sinus_mask, x_min, x_max):
             sinus_profile.append(None)
             valid_xs.append(x)
             
-    if not any(y is not None for y in sinus_profile):
+    # Eğer veri çok azsa direkt dön
+    if len([y for y in sinus_profile if y is not None]) < 10:
         return x_min, x_max
 
-    # 2. Yumuşatma (Gürültüyü azaltmak için slope hesabından önce)
-    # None değerleri enterpole et veya yoksay
+    # 2. Yumuşatma (Smoothing) - Gürültüyü engellemek için kritik
     clean_y = []
+    last_valid = 0
+    # None boşluklarını doldur
     for y in sinus_profile:
-        if y is not None: clean_y.append(y)
-        else: clean_y.append(clean_y[-1] if clean_y else 0)
+        if y is not None: 
+            clean_y.append(y)
+            last_valid = y
+        else: 
+            clean_y.append(last_valid)
     
-    # Moving Average ile yumuşat
-    smooth_y = np.convolve(clean_y, np.ones(5)/5, mode='same')
+    # Kernel size 9 ile yumuşat (Keskin çıkışları törpüler)
+    smooth_kernel_size = 9
+    smooth_y = np.convolve(clean_y, np.ones(smooth_kernel_size)/smooth_kernel_size, mode='same')
     
     # 3. En derin noktayı bul
-    deepest_val = max(clean_y)
-    # En derinin ortasındaki indeksi bul
-    deepest_indices = [i for i, y in enumerate(clean_y) if y >= deepest_val - 2] # 2px tolerans
+    deepest_val = max(clean_y) # Görüntü koordinatında en büyük Y = En alt nokta
+    
+    # En derine yakın (2px tolerans) noktaları bul ve ortadakini merkez seç
+    deepest_indices = [i for i, y in enumerate(smooth_y) if y >= deepest_val - 2]
+    if not deepest_indices: deepest_indices = [len(smooth_y)//2]
     center_idx = deepest_indices[len(deepest_indices)//2]
 
-    # ---- AYARLAR ----
-    MAX_HEIGHT_LIMIT = 50  # Kavisli cepler için geniş tolerans (50px ~ 5mm)
-    MAX_SLOPE_LIMIT = 0.8  # Dik duvar limiti (0.8 = 45 dereceye yakın)
+    # ---- AYARLAR (FINE TUNING) ----
+    MAX_HEIGHT_LIMIT = 45   # 30 az geliyordu, 50 çoktu. 45 ideal.
+    MAX_SLOPE_LIMIT = 0.60  # Duvar kabul etme eğimi (0.6 ~ 30 derece)
+    SLOPE_LOOKBACK = 15     # Eğimi hesaplarken kaç piksel geriye bakılsın? (Geniş bakış)
     
     # 4. SOLA TARA
     start_idx = 0
+    # Merkezden biraz (10px) uzaklaşana kadar slope kontrolü yapma (Dip düzdür)
     for i in range(center_idx, 0, -1):
-        # Yükseklik Kontrolü
+        # A. Yükseklik Kontrolü
         current_h = deepest_val - smooth_y[i]
         if current_h > MAX_HEIGHT_LIMIT:
             start_idx = i + 1
             break
         
-        # Eğim Kontrolü (Bir önceki adıma göre ne kadar yükseldi?)
-        # i ile i-5 arasındaki farka bak (anlık gürültüyü engellemek için)
-        lookback = max(0, i-5)
-        if i > lookback:
-            dy = abs(smooth_y[lookback] - smooth_y[i])
-            dx = abs(lookback - i)
-            slope = dy / dx if dx > 0 else 0
-            
-            if slope > MAX_SLOPE_LIMIT:
-                start_idx = i + 1 # Duvar başladı, burada kes.
-                break
+        # B. Eğim Kontrolü (Sadece merkezden uzaklaşınca bak)
+        if abs(center_idx - i) > 10:
+            lookback_idx = min(len(smooth_y)-1, i + SLOPE_LOOKBACK) 
+            # Sola giderken "ilerisi" (i+lookback) daha yüksek (küçük Y) olmalı
+            dy = abs(smooth_y[lookback_idx] - smooth_y[i])
+            dx = abs(lookback_idx - i)
+            if dx > 0:
+                slope = dy / dx
+                if slope > MAX_SLOPE_LIMIT:
+                    start_idx = i + 1 # Duvar başladı, kes.
+                    break
     
     # 5. SAĞA TARA
     end_idx = len(valid_xs) - 1
     for i in range(center_idx, len(valid_xs) - 1):
-        # Yükseklik Kontrolü
+        # A. Yükseklik Kontrolü
         current_h = deepest_val - smooth_y[i]
         if current_h > MAX_HEIGHT_LIMIT:
             end_idx = i - 1
             break
             
-        # Eğim Kontrolü
-        lookahead = min(len(valid_xs)-1, i+5)
-        if i < lookahead:
-            dy = abs(smooth_y[lookahead] - smooth_y[i])
-            dx = abs(lookahead - i)
-            slope = dy / dx if dx > 0 else 0
-            
-            if slope > MAX_SLOPE_LIMIT:
-                end_idx = i - 1
+        # B. Eğim Kontrolü
+        if abs(i - center_idx) > 10:
+            lookback_idx = max(0, i - SLOPE_LOOKBACK)
+            dy = abs(smooth_y[lookback_idx] - smooth_y[i])
+            dx = abs(i - lookback_idx)
+            if dx > 0:
+                slope = dy / dx
+                if slope > MAX_SLOPE_LIMIT:
+                    end_idx = i - 1 # Duvar başladı, kes.
+                    break
+
+    # 6. GÜVENLİK SİGORTASI (Fallback)
+    # Eğer akıllı algoritma çok dar bir alan (<15px) seçerse hata yapmış demektir.
+    # Bu durumda "Basit 30px Kesimi"ne geri dön. Hepsini silmesin.
+    if (end_idx - start_idx) < 15:
+        # Fallback: Sadece yükseklik 30px
+        safe_limit = 30
+        
+        # Sola basit tara
+        s_safe = 0
+        for i in range(center_idx, -1, -1):
+            if (deepest_val - smooth_y[i]) > safe_limit:
+                s_safe = i
                 break
+        # Sağa basit tara
+        e_safe = len(valid_xs) - 1
+        for i in range(center_idx, len(valid_xs)):
+            if (deepest_val - smooth_y[i]) > safe_limit:
+                e_safe = i
+                break
+        
+        return valid_xs[s_safe], valid_xs[e_safe]
 
     return valid_xs[start_idx], valid_xs[end_idx]
 
@@ -146,8 +182,8 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
-    # --- YENİ HİBRİT DUVAR KESME ---
-    floor_start, floor_end = get_sinus_floor_boundaries_hybrid(
+    # --- YENİ FINE-TUNED DUVAR KESME ---
+    floor_start, floor_end = get_sinus_floor_boundaries_finetuned(
         sinus_mask, x_min, x_max
     )
     
@@ -175,7 +211,7 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
         dist_px = kret_bottom - sinus_bottom
         dist_mm = dist_px * px_to_mm_ratio
         
-        # Ekstra güvenlik: Hibrit kesime rağmen kalan absürt değerler varsa at
+        # Ekstra güvenlik: 20mm üstü kesin duvardır
         if dist_mm > 20.0: continue 
             
         full_profile.append({'dist': dist_px, 'x': x_global, 'y_s': sinus_bottom, 'y_k': kret_bottom})
@@ -198,7 +234,8 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
             idx = (np.abs(valid_xs_arr - target_x)).argmin()
             nearest_x = valid_xs_arr[idx]
             
-            if abs(nearest_x - target_x) < 30:
+            # 40 piksel toleransla hedefi bul
+            if abs(nearest_x - target_x) < 40:
                 candidates.append(profile_by_x[nearest_x])
 
     # B. GLOBAL MİNİMUM
