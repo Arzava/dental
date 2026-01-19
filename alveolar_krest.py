@@ -43,6 +43,92 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
             
     return smoothed_bottoms
 
+def get_sinus_floor_boundaries_hybrid(sinus_mask, x_min, x_max):
+    # ... (Buradaki kod aynı kalacak, önceki adımda yazdığımız "Smart Walker" mantığı) ...
+    # Yer kaplamaması için özet geçiyorum, önceki kodun aynısı:
+    sinus_profile = []
+    valid_xs = []
+    for x in range(x_min, x_max):
+        ys = np.where(sinus_mask[:, x] > 0)[0]
+        if ys.size > 0:
+            sinus_profile.append(int(ys.max())) 
+            valid_xs.append(x)
+        else:
+            sinus_profile.append(None)
+            valid_xs.append(x)
+            
+    if len([y for y in sinus_profile if y is not None]) < 10:
+        return x_min, x_max
+
+    clean_y = []
+    last_valid = 0
+    for y in sinus_profile:
+        if y is not None: 
+            clean_y.append(y)
+            last_valid = y
+        else: 
+            clean_y.append(last_valid)
+    
+    smooth_kernel_size = 9
+    smooth_y = np.convolve(clean_y, np.ones(smooth_kernel_size)/smooth_kernel_size, mode='same')
+    
+    deepest_val = max(clean_y)
+    deepest_indices = [i for i, y in enumerate(smooth_y) if y >= deepest_val - 2]
+    if not deepest_indices: deepest_indices = [len(smooth_y)//2]
+    center_idx = deepest_indices[len(deepest_indices)//2]
+
+    MAX_HEIGHT_LIMIT = 45   
+    MAX_SLOPE_LIMIT = 0.60  
+    SLOPE_LOOKBACK = 15     
+    
+    start_idx = 0
+    for i in range(center_idx, 0, -1):
+        current_h = deepest_val - smooth_y[i]
+        if current_h > MAX_HEIGHT_LIMIT:
+            start_idx = i + 1
+            break
+        if abs(center_idx - i) > 10:
+            lookback_idx = min(len(smooth_y)-1, i + SLOPE_LOOKBACK) 
+            dy = abs(smooth_y[lookback_idx] - smooth_y[i])
+            dx = abs(lookback_idx - i)
+            if dx > 0:
+                slope = dy / dx
+                if slope > MAX_SLOPE_LIMIT:
+                    start_idx = i + 1 
+                    break
+    
+    end_idx = len(valid_xs) - 1
+    for i in range(center_idx, len(valid_xs) - 1):
+        current_h = deepest_val - smooth_y[i]
+        if current_h > MAX_HEIGHT_LIMIT:
+            end_idx = i - 1
+            break
+        if abs(i - center_idx) > 10:
+            lookback_idx = max(0, i - SLOPE_LOOKBACK)
+            dy = abs(smooth_y[lookback_idx] - smooth_y[i])
+            dx = abs(i - lookback_idx)
+            if dx > 0:
+                slope = dy / dx
+                if slope > MAX_SLOPE_LIMIT:
+                    end_idx = i - 1
+                    break
+
+    if (end_idx - start_idx) < 15:
+        safe_limit = 30
+        s_safe = 0
+        for i in range(center_idx, -1, -1):
+            if (deepest_val - smooth_y[i]) > safe_limit:
+                s_safe = i
+                break
+        e_safe = len(valid_xs) - 1
+        for i in range(center_idx, len(valid_xs)):
+            if (deepest_val - smooth_y[i]) > safe_limit:
+                e_safe = i
+                break
+        return valid_xs[s_safe], valid_xs[e_safe]
+
+    return valid_xs[start_idx], valid_xs[end_idx]
+
 def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
     h, w = image.shape[:2]
     sinus_mask = rasterize_class(res, SINUS_CLASS, h, w)
@@ -61,143 +147,65 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
-    # 2. HAM VERİLERİ HAZIRLA
-    # Önce tüm geçerli aralık için ham verileri (y_sinus, y_kret) çıkaralım
-    # Böylece algoritma içinde hızlıca gezinebiliriz.
+    # DUVAR KESME (Fine Tuned)
+    floor_start, floor_end = get_sinus_floor_boundaries_hybrid(
+        sinus_mask, x_min, x_max
+    )
     
+    width = floor_end - floor_start
+    if width < 10: return [] 
+
+    # 2. PROFİL
     smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12)
     
-    # Data structure: index -> {x, y_s, y_k, dist_px, dist_mm}
-    # x_min'den başlayarak 0, 1, 2... diye indeksleyeceğiz.
-    data_line = []
+    full_profile = [] 
     
-    for x_global in range(x_min, x_max):
-        if not valid_cols_mask[x_global]: 
-            data_line.append(None)
-            continue
+    for x_global in range(floor_start, floor_end):
+        if not valid_cols_mask[x_global]: continue
 
         ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
-        if ys_s.size == 0: 
-            data_line.append(None)
-            continue
-            
+        if ys_s.size == 0: continue
         sinus_bottom = int(ys_s.max())
         
         idx = x_global - x_min
-        if idx < 0 or idx >= len(smoothed_kret_ys): 
-            data_line.append(None)
-            continue
-            
+        if idx < 0 or idx >= len(smoothed_kret_ys): continue
         kret_bottom = smoothed_kret_ys[idx]
         
-        if kret_bottom is None or kret_bottom <= sinus_bottom: 
-            data_line.append(None)
-            continue
+        if kret_bottom is None or kret_bottom <= sinus_bottom: continue
         
         dist_px = kret_bottom - sinus_bottom
         dist_mm = dist_px * px_to_mm_ratio
         
-        data_line.append({
-            'x': x_global,
-            'y_s': sinus_bottom,
-            'y_k': kret_bottom,
-            'dist_px': dist_px,
-            'dist_mm': dist_mm
-        })
+        if dist_mm > 20.0: continue 
+            
+        full_profile.append({'dist': dist_px, 'x': x_global, 'y_s': sinus_bottom, 'y_k': kret_bottom})
 
-    # 3. MERKEZDEN DIŞA GENİŞLEME (CENTER-OUT EXPANSION)
-    # En derin noktayı bul (Valid olanlar içinden)
-    valid_points = [d for d in data_line if d is not None]
-    if not valid_points: return []
-    
-    # En büyük y_s (ekranda en alt) en derin noktadır.
-    deepest_point = max(valid_points, key=lambda p: p['y_s'])
-    deepest_y = deepest_point['y_s']
-    
-    # Deepest point'in data_line içindeki indeksini bul (x_global değil, array index)
-    # x = x_min + index olduğu için: index = x - x_min
-    start_idx = deepest_point['x'] - x_min
-    
-    # KURALLAR
-    MAX_HEIGHT_DIFF_PX = 50   # 50 pikselden fazla yukarı çıkarsa DUR.
-    MAX_BONE_THICKNESS_MM = 13.0 # 13mm'den kalın kemik görürsen DUR.
-    
-    # Sola Yürü
-    left_boundary_idx = start_idx
-    for i in range(start_idx, -1, -1):
-        pt = data_line[i]
-        if pt is None: continue # Maske kopuksa atla ama durma (belki küçük bir deliktir)
-        
-        # Kural 1: Yükseklik Kontrolü (Duvar mı?)
-        # Sinüs tabanı (y_s) Deepest'ten çok küçükse (yukarıdaysa) dur.
-        if (deepest_y - pt['y_s']) > MAX_HEIGHT_DIFF_PX:
-            break # Duvar başladı, kes.
-            
-        # Kural 2: Kalınlık Kontrolü (Komşuluk bitti mi?)
-        if pt['dist_mm'] > MAX_BONE_THICKNESS_MM:
-            break # Kemik çok kalınlaştı, komşuluk bitti, kes.
-            
-        left_boundary_idx = i
+    if not full_profile: return []
 
-    # Sağa Yürü
-    right_boundary_idx = start_idx
-    for i in range(start_idx, len(data_line)):
-        pt = data_line[i]
-        if pt is None: continue
-        
-        if (deepest_y - pt['y_s']) > MAX_HEIGHT_DIFF_PX:
-            break
-            
-        if pt['dist_mm'] > MAX_BONE_THICKNESS_MM:
-            break
-            
-        right_boundary_idx = i
-        
-    # 4. YENİ GEÇERLİ LİSTE (Filtered Profile)
-    # Sadece sol ve sağ sınırın içindeki noktaları al
-    final_profile = []
-    for i in range(left_boundary_idx, right_boundary_idx + 1):
-        if data_line[i] is not None:
-            final_profile.append(data_line[i])
-            
-    if not final_profile: return []
-
-    # 5. NOKTA SEÇİMİ (BAŞ - ORTA - SON + EN DÜŞÜK)
+    # 3. NOKTA SEÇİMİ
     candidates = []
-    
-    # Profil genişliği
-    p_width = final_profile[-1]['x'] - final_profile[0]['x']
-    p_start_x = final_profile[0]['x']
-    
-    # Profil dictionary lookup (hızlı erişim için)
-    profile_by_x = {p['x']: p for p in final_profile}
+
+    target_ratios = [0.15, 0.50, 0.85]
+    profile_by_x = {p['x']: p for p in full_profile}
     valid_xs = sorted(profile_by_x.keys())
     valid_xs_arr = np.array(valid_xs)
-
-    # A. ZORUNLU KONUMLAR (%15, %50, %85)
-    target_ratios = [0.15, 0.50, 0.85]
+    
     if len(valid_xs) > 0:
         for ratio in target_ratios:
-            target_x = int(p_start_x + p_width * ratio)
-            # En yakın geçerli noktayı bul
+            target_x = int(floor_start + width * ratio)
             idx = (np.abs(valid_xs_arr - target_x)).argmin()
             nearest_x = valid_xs_arr[idx]
-            
-            # Hedefe makul mesafedeyse ekle (30px tolerans)
-            if abs(nearest_x - target_x) < 30:
+            if abs(nearest_x - target_x) < 40:
                 candidates.append(profile_by_x[nearest_x])
 
-    # B. GLOBAL MİNİMUM (En İnce) - Mutlaka olmalı
-    final_profile.sort(key=lambda p: p['dist_px'])
-    global_min = final_profile[0]
+    full_profile.sort(key=lambda p: p['dist'])
+    global_min = full_profile[0]
     candidates.append(global_min)
     
-    # C. BİRLEŞTİRME VE TEMİZLEME
     final_points = []
     min_separation = 30 
     
-    # Öncelik en ince olanda olsun diye mesafeye göre sırala
-    candidates.sort(key=lambda p: p['dist_px'])
+    candidates.sort(key=lambda p: p['dist'])
     
     for cand in candidates:
         is_duplicate = False
@@ -208,12 +216,11 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
         if not is_duplicate:
             final_points.append(cand)
             
-    # Sonuçları Formatla
     final_output = []
-    final_points.sort(key=lambda p: p['x']) # Soldan sağa çizilsin
+    final_points.sort(key=lambda p: p['x'])
     
     for p in final_points:
-        final_output.append((p['dist_px'], p['x'], p['y_s'], p['y_k']))
+        final_output.append((p['dist'], p['x'], p['y_s'], p['y_k']))
             
     return final_output
 
@@ -232,9 +239,20 @@ def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
             dist_px, x, y_sinus, y_kret = p
             dist_mm = dist_px * px_to_mm_ratio
             
-            if dist_mm <= 5.0: decision = "AÇIK LİFT"
-            elif dist_mm >= 8.0: decision = "LİFT GEREKMEZ"
-            else: decision = "KAPALI LİFT"
+            # --- YENİ KARAR MEKANİZMASI ---
+            # 0-3 mm: AÇIK LİFT (ÇİFT AŞAMALI)
+            # 3-5 mm: AÇIK LİFT (TEK AŞAMALI)
+            # 6-8 mm: KAPALI LİFT (Burada 5.01 - 8.0 arasını Kapalı kabul ediyoruz)
+            # 8 mm+:  LİFT GEREKMEZ
+            
+            if dist_mm <= 3.0:
+                decision = "AÇIK LİFT (Çift Aşamalı)"
+            elif dist_mm <= 5.0:
+                decision = "AÇIK LİFT (Tek Aşamalı)"
+            elif dist_mm < 8.0:
+                decision = "KAPALI LİFT"
+            else:
+                decision = "LİFT GEREKMEZ"
             
             if dist_mm < min_mm_global: min_mm_global = dist_mm
 
@@ -243,9 +261,15 @@ def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
                 "decision": decision, "coords": (x, y_sinus, y_kret)
             })
 
-        if min_mm_global <= 5.0: g_dec = "AÇIK LİFT"
-        elif min_mm_global >= 8.0: g_dec = "LİFT GEREKMEZ"
-        else: g_dec = "KAPALI LİFT"
+        # Global Karar (En düşük değere göre)
+        if min_mm_global <= 3.0:
+            g_dec = "AÇIK LİFT (Çift Aşamalı)"
+        elif min_mm_global <= 5.0:
+            g_dec = "AÇIK LİFT (Tek Aşamalı)"
+        elif min_mm_global < 8.0:
+            g_dec = "KAPALI LİFT"
+        else:
+            g_dec = "LİFT GEREKMEZ"
 
         results[side] = {
             "points": side_results,
