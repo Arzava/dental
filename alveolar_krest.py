@@ -43,7 +43,7 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
             
     return smoothed_bottoms
 
-def get_sinus_floor_boundaries(sinus_mask, x_min, x_max, wall_height_limit=40):
+def get_sinus_floor_boundaries(sinus_mask, x_min, x_max, wall_height_limit=35):
     """
     SİNÜS DUVARLARINI KESME ALGORİTMASI:
     1. Sinüsün en derin (en alt) noktasını bulur.
