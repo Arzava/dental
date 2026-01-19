@@ -24,6 +24,7 @@ def keep_half(mask, side):
     return out
 
 def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
+    """Kret yüzeyini yumuşatır (diş kökü boşluklarını doldurur)."""
     raw_bottoms = []
     for x in range(x_min, x_max):
         ys = np.where(kret_mask[:, x] > 0)[0]
@@ -44,6 +45,7 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
     return smoothed_bottoms
 
 def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=1.0, height_tolerance_px=80):
+    """Sinüs duvarlarını ve eğimli yüzeyleri filtreler."""
     sinus_bottoms = []
     valid_indices = [] 
     
@@ -98,7 +100,7 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     sinus_mask = keep_half(sinus_mask, side)
     kret_mask  = keep_half(kret_mask,  side)
     
-    # ORTA HAT FİLTRESİ
+    # --- 1. ORTA HAT FİLTRESİ ---
     center_x = w // 2
     dead_zone_width = int(w * 0.10) 
     safe_zone_start = center_x - dead_zone_width
@@ -114,6 +116,7 @@ def compute_multi_thickness(res, image, side, num_segments=3):
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
+    # --- 2. DUVAR VE EĞİM FİLTRESİ ---
     valid_x_range = get_valid_sinus_floor_range(
         sinus_mask, x_min, x_max, 
         slope_threshold=1.0, 
@@ -126,70 +129,64 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     real_x_max = max(valid_x_range)
     width = real_x_max - real_x_min
     
-    if width < 10: return []
+    if width < 10: return [] # Çok dar alan
 
     smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12)
     
-    # --- YENİ MANTIK: TÜM ALANI TARA VE SEÇ ---
-    # 1. Önce tüm geçerli noktaları bir listeye topla
-    all_possible_points = []
-    
-    for x_global in range(real_x_min, real_x_max):
-        if not valid_cols_mask[x_global]: continue
+    measurements = []
 
-        ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
-        if ys_s.size == 0: continue
+    # --- 3. YENİ ZORUNLU BÖLGE (STRICT SECTORING) MANTIĞI ---
+    
+    # Eğer alan çok darsa (<50px) tek bir ölçüm al ve çık
+    if width < 50:
+        sectors = [(real_x_min, real_x_max)]
+    else:
+        # Alanı matematiksel olarak eşit 3 parçaya böl
+        # int() kullanarak tam sayı sınırları belirliyoruz
+        p1 = real_x_min
+        p2 = real_x_min + int(width * 0.33)
+        p3 = real_x_min + int(width * 0.66)
+        p4 = real_x_max
+        
+        # Sektörler: [Baş-33%], [33%-66%], [66%-Son]
+        sectors = [
+            (p1, p2),
+            (p2, p3),
+            (p3, p4)
+        ]
 
-        sinus_bottom = int(ys_s.max())
+    # Her sektör için KENDİ İÇİNDEKİ en düşük noktayı bul
+    for s_start, s_end in sectors:
+        best_in_sector = None
         
-        idx = x_global - x_min
-        if idx < 0 or idx >= len(smoothed_kret_ys): continue
-        kret_bottom = smoothed_kret_ys[idx]
-        
-        if kret_bottom is None or kret_bottom <= sinus_bottom: continue
-        
-        dist = kret_bottom - sinus_bottom
-        all_possible_points.append((dist, x_global, sinus_bottom, kret_bottom))
-    
-    if not all_possible_points:
-        return []
+        # Sektör içindeki her pikseli tara
+        for x_global in range(s_start, s_end):
+            # Maske ve Duvar Filtresi Kontrolü
+            if not valid_cols_mask[x_global]: continue
+            if x_global < real_x_min or x_global > real_x_max: continue
 
-    # 2. Mesafeye göre sırala (En küçük/riskli en başta)
-    all_possible_points.sort(key=lambda x: x[0])
-    
-    # 3. Birbirinden uzak 3 noktayı seç
-    selected_points = []
-    # Noktaların birbirine minimum uzaklığı (Genişliğin %15'i kadar olsun)
-    min_separation = max(15, width * 0.15) 
-    
-    for pt in all_possible_points:
-        dist, x, y_s, y_k = pt
-        
-        # Eğer yeterince nokta seçtiysek dur
-        if len(selected_points) >= num_segments:
-            break
+            ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
+            if ys_s.size == 0: continue
+
+            sinus_bottom = int(ys_s.max())
             
-        # Çakışma kontrolü
-        is_far_enough = True
-        for existing in selected_points:
-            existing_x = existing[1]
-            if abs(x - existing_x) < min_separation:
-                is_far_enough = False
-                break
-        
-        if is_far_enough:
-            selected_points.append(pt)
+            idx = x_global - x_min
+            if idx < 0 or idx >= len(smoothed_kret_ys): continue
+            kret_bottom = smoothed_kret_ys[idx]
             
-    # Eğer hiç nokta seçemediysek (mesela alan çok dar ve min_separation büyük geldi)
-    # En iyi tek noktayı al
-    if not selected_points and all_possible_points:
-        selected_points.append(all_possible_points[0])
-        
-    # 4. Seçilen noktaları X koordinatına göre (Soldan Sağa) sırala
-    # Böylece ekranda Start - Mid - End gibi görünürler
-    selected_points.sort(key=lambda x: x[1])
+            if kret_bottom is None or kret_bottom <= sinus_bottom: continue
             
-    return selected_points
+            dist = kret_bottom - sinus_bottom
+            
+            # Sektör içi minimumu bul
+            if best_in_sector is None or dist < best_in_sector[0]:
+                best_in_sector = (dist, x_global, sinus_bottom, kret_bottom)
+        
+        # Eğer bu sektörde geçerli bir nokta bulunduysa listeye ekle
+        if best_in_sector:
+            measurements.append(best_in_sector)
+            
+    return measurements
 
 def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
     results = {}
