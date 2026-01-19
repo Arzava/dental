@@ -185,15 +185,14 @@ with st.sidebar:
     alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4, step=0.05)
     
     st.divider()
-    st.subheader("📋 Yeni Protokol")
+    st.subheader("📋 Karar Verme Protokolü")
     st.info("0-3mm: Açık Lift (Çift)")
     st.warning("3-5mm: Açık Lift (Tek)")
     st.warning("6-8mm: Kapalı Lift")
     st.success("8mm+: Gerekmez")
     
     st.divider()
-    st.caption("Dr. Muhammed ÇELİK")
-
+    
 # --- ANA EKRAN ---
 st.title("🦷 Otomatik İmplant Planlama")
 
