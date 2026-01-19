@@ -43,11 +43,10 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
             
     return smoothed_bottoms
 
-def get_sinus_floor_boundaries(sinus_mask, x_min, x_max, wall_height_limit=20):
+def get_sinus_floor_boundaries(sinus_mask, x_min, x_max, wall_height_limit=30):
     """
-    GÜNCELLENDİ: wall_height_limit = 20
-    Sinüsün en derin noktasından sadece 20 piksel yukarı çıkılmasına izin verilir.
-    Daha fazlası 'duvar' kabul edilip kesilir.
+    GÜNCELLENDİ: wall_height_limit = 30
+    Sinüsün en derin noktasından 30 piksel yukarı çıkılmasına izin verilir.
     """
     sinus_profile = []
     valid_xs = []
@@ -69,7 +68,7 @@ def get_sinus_floor_boundaries(sinus_mask, x_min, x_max, wall_height_limit=20):
     
     deepest_y = max(valid_ys) 
     
-    # Sınır: En derin noktadan 20 piksel yukarısı
+    # Sınır: En derin noktadan 30 piksel yukarısı
     ceiling_y = deepest_y - wall_height_limit
     
     deepest_indices = [i for i, y in enumerate(sinus_profile) if y == deepest_y]
@@ -114,9 +113,9 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
-    # --- DUVAR KESME (20px LİMİT) ---
+    # --- DUVAR KESME (30px LİMİT) ---
     floor_start, floor_end = get_sinus_floor_boundaries(
-        sinus_mask, x_min, x_max, wall_height_limit=20
+        sinus_mask, x_min, x_max, wall_height_limit=30
     )
     
     width = floor_end - floor_start
