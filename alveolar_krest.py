@@ -43,14 +43,16 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
             
     return smoothed_bottoms
 
-def get_sinus_floor_boundaries(sinus_mask, x_min, x_max, wall_height_limit=35):
+def get_sinus_floor_boundaries_hybrid(sinus_mask, x_min, x_max):
     """
-    GÜNCELLENDİ: wall_height_limit = 35
-    Sinüsün en derin noktasından 35 piksel yukarı çıkılmasına izin verilir.
+    HİBRİT SINIR TESPİTİ:
+    Hem yükseklik hem de eğim kontrolü yapar.
+    - Kavisli ceplere izin verir (Yükseklik toleransı yüksek).
+    - Dik duvarları hemen keser (Eğim toleransı düşük).
     """
+    # 1. Profili Çıkar
     sinus_profile = []
     valid_xs = []
-    
     for x in range(x_min, x_max):
         ys = np.where(sinus_mask[:, x] > 0)[0]
         if ys.size > 0:
@@ -63,37 +65,68 @@ def get_sinus_floor_boundaries(sinus_mask, x_min, x_max, wall_height_limit=35):
     if not any(y is not None for y in sinus_profile):
         return x_min, x_max
 
-    valid_ys = [y for y in sinus_profile if y is not None]
-    if not valid_ys: return x_min, x_max
+    # 2. Yumuşatma (Gürültüyü azaltmak için slope hesabından önce)
+    # None değerleri enterpole et veya yoksay
+    clean_y = []
+    for y in sinus_profile:
+        if y is not None: clean_y.append(y)
+        else: clean_y.append(clean_y[-1] if clean_y else 0)
     
-    deepest_y = max(valid_ys) 
+    # Moving Average ile yumuşat
+    smooth_y = np.convolve(clean_y, np.ones(5)/5, mode='same')
     
-    # Sınır: En derin noktadan 35 piksel yukarısı
-    ceiling_y = deepest_y - wall_height_limit
-    
-    deepest_indices = [i for i, y in enumerate(sinus_profile) if y == deepest_y]
+    # 3. En derin noktayı bul
+    deepest_val = max(clean_y)
+    # En derinin ortasındaki indeksi bul
+    deepest_indices = [i for i, y in enumerate(clean_y) if y >= deepest_val - 2] # 2px tolerans
     center_idx = deepest_indices[len(deepest_indices)//2]
+
+    # ---- AYARLAR ----
+    MAX_HEIGHT_LIMIT = 50  # Kavisli cepler için geniş tolerans (50px ~ 5mm)
+    MAX_SLOPE_LIMIT = 0.8  # Dik duvar limiti (0.8 = 45 dereceye yakın)
     
-    # SOLA TARA
+    # 4. SOLA TARA
     start_idx = 0
-    for i in range(center_idx, -1, -1):
-        y = sinus_profile[i]
-        if y is None or y < ceiling_y: 
-            start_idx = i + 1 
+    for i in range(center_idx, 0, -1):
+        # Yükseklik Kontrolü
+        current_h = deepest_val - smooth_y[i]
+        if current_h > MAX_HEIGHT_LIMIT:
+            start_idx = i + 1
             break
+        
+        # Eğim Kontrolü (Bir önceki adıma göre ne kadar yükseldi?)
+        # i ile i-5 arasındaki farka bak (anlık gürültüyü engellemek için)
+        lookback = max(0, i-5)
+        if i > lookback:
+            dy = abs(smooth_y[lookback] - smooth_y[i])
+            dx = abs(lookback - i)
+            slope = dy / dx if dx > 0 else 0
             
-    # SAĞA TARA
-    end_idx = len(sinus_profile) - 1
-    for i in range(center_idx, len(sinus_profile)):
-        y = sinus_profile[i]
-        if y is None or y < ceiling_y: 
+            if slope > MAX_SLOPE_LIMIT:
+                start_idx = i + 1 # Duvar başladı, burada kes.
+                break
+    
+    # 5. SAĞA TARA
+    end_idx = len(valid_xs) - 1
+    for i in range(center_idx, len(valid_xs) - 1):
+        # Yükseklik Kontrolü
+        current_h = deepest_val - smooth_y[i]
+        if current_h > MAX_HEIGHT_LIMIT:
             end_idx = i - 1
             break
             
-    real_x_start = valid_xs[start_idx]
-    real_x_end = valid_xs[end_idx]
-    
-    return real_x_start, real_x_end
+        # Eğim Kontrolü
+        lookahead = min(len(valid_xs)-1, i+5)
+        if i < lookahead:
+            dy = abs(smooth_y[lookahead] - smooth_y[i])
+            dx = abs(lookahead - i)
+            slope = dy / dx if dx > 0 else 0
+            
+            if slope > MAX_SLOPE_LIMIT:
+                end_idx = i - 1
+                break
+
+    return valid_xs[start_idx], valid_xs[end_idx]
 
 def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
     h, w = image.shape[:2]
@@ -113,9 +146,9 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
-    # --- DUVAR KESME (35px LİMİT) ---
-    floor_start, floor_end = get_sinus_floor_boundaries(
-        sinus_mask, x_min, x_max, wall_height_limit=35
+    # --- YENİ HİBRİT DUVAR KESME ---
+    floor_start, floor_end = get_sinus_floor_boundaries_hybrid(
+        sinus_mask, x_min, x_max
     )
     
     width = floor_end - floor_start
@@ -140,9 +173,9 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
         if kret_bottom is None or kret_bottom <= sinus_bottom: continue
         
         dist_px = kret_bottom - sinus_bottom
-        
-        # 20 mm üstü (duvar kalıntısı varsa) at
         dist_mm = dist_px * px_to_mm_ratio
+        
+        # Ekstra güvenlik: Hibrit kesime rağmen kalan absürt değerler varsa at
         if dist_mm > 20.0: continue 
             
         full_profile.append({'dist': dist_px, 'x': x_global, 'y_s': sinus_bottom, 'y_k': kret_bottom})
