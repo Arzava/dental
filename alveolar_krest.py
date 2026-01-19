@@ -44,7 +44,8 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
             
     return smoothed_bottoms
 
-def compute_multi_thickness(res, image, side, num_points=3):
+# px_to_mm_ratio parametresini artık buraya da alıyoruz
+def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
     h, w = image.shape[:2]
     sinus_mask = rasterize_class(res, SINUS_CLASS, h, w)
     kret_mask  = rasterize_class(res, KRET_CLASS,  h, w)
@@ -52,8 +53,7 @@ def compute_multi_thickness(res, image, side, num_points=3):
     sinus_mask = keep_half(sinus_mask, side)
     kret_mask  = keep_half(kret_mask,  side)
     
-    # 1. GEÇERLİ ALANI BUL
-    # Filtreleri kaldırdık, maske nerede varsa orası geçerlidir.
+    # 1. ORTAK ALAN TESPİTİ
     has_sinus = np.any(sinus_mask > 0, axis=0)
     has_kret = np.any(kret_mask > 0, axis=0)
     valid_cols_mask = np.logical_and(has_sinus, has_kret)
@@ -68,9 +68,12 @@ def compute_multi_thickness(res, image, side, num_points=3):
     # 2. PROFİL ÇIKARMA
     smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12)
     
-    # Tüm geçerli noktaları kaydet
-    full_profile = [] # (dist, x, y_s, y_k)
+    profile = [] 
     
+    # --- YENİ FİLTRE: KLİNİK ANLAMLILIK SINIRI ---
+    # 15 mm üzerindeki kemik kalınlıklarını "Komşuluk Dışı / Güvenli Bölge" sayıp eliyoruz.
+    MAX_RELEVANT_HEIGHT_MM = 15.0 
+
     for x_global in range(x_min, x_max):
         if not valid_cols_mask[x_global]: continue
 
@@ -84,72 +87,62 @@ def compute_multi_thickness(res, image, side, num_points=3):
         
         if kret_bottom is None or kret_bottom <= sinus_bottom: continue
         
-        dist = kret_bottom - sinus_bottom
-        full_profile.append({'dist': dist, 'x': x_global, 'y_s': sinus_bottom, 'y_k': kret_bottom})
-
-    if not full_profile: return []
-
-    # --- YENİ STRATEJİ: HİBRİT SEÇİM (Zorunlu Konumlar + En Düşükler) ---
-    
-    candidates = []
-
-    # A. ZORUNLU KONUMLAR (Baş, Orta, Son)
-    # Maske kenarlarındaki hatalardan kaçınmak için %15, %50, %85 noktalarını hedefle
-    target_ratios = [0.15, 0.50, 0.85]
-    
-    # Hızlı erişim için profili X'e göre indeksle
-    profile_by_x = {p['x']: p for p in full_profile}
-    valid_xs = sorted(profile_by_x.keys())
-    valid_xs_arr = np.array(valid_xs)
-    
-    for ratio in target_ratios:
-        target_x = int(x_min + width * ratio)
+        dist_px = kret_bottom - sinus_bottom
+        dist_mm = dist_px * px_to_mm_ratio # MM hesabı
         
-        # Bu hedefe en yakın geçerli noktayı bul
-        idx = (np.abs(valid_xs_arr - target_x)).argmin()
-        nearest_x = valid_xs_arr[idx]
-        
-        # Eğer çok uzak değilse (örn: arada büyük boşluk yoksa) al
-        if abs(nearest_x - target_x) < 30:
-            candidates.append(profile_by_x[nearest_x])
+        # --- KRİTİK EMEK: ---
+        # Eğer kalınlık 15mm'den fazlaysa, burası sinüs duvarıdır veya kalın kemiktir.
+        # Ölçüm listesine ekleme.
+        if dist_mm > MAX_RELEVANT_HEIGHT_MM:
+            continue
+            
+        profile.append({'dist': dist_px, 'x': x_global, 'y_s': sinus_bottom, 'y_k': kret_bottom})
 
-    # B. EN DÜŞÜK NOKTALAR (RİSK GRUBU)
-    # Tüm profilin en düşük noktasını (Global Min) kesinlikle ekle
-    full_profile.sort(key=lambda p: p['dist'])
-    global_min = full_profile[0]
-    candidates.append(global_min)
-    
-    # Varsa ikinci bir derin çukuru da ekleyebiliriz (opsiyonel)
-    # Ama şimdilik Global Min yeterli, kalabalık olmasın.
+    if not profile: return []
 
-    # C. BİRLEŞTİRME VE TEMİZLEME (MERGE & DEDUPLICATE)
-    # Aday noktalar birbirine çok yakınsa, daha düşük (riskli) olanı tut.
+    # 3. LOKAL MİNİMUMLARI (ÇUKURLARI) BUL
+    local_minima = []
     
-    final_points = []
-    min_separation = 40 # 40 pikselden yakın noktaları birleştir
+    # Uç noktaları kontrol etmemek için range(1, len-1)
+    if len(profile) > 2:
+        for i in range(1, len(profile) - 1):
+            prev_p = profile[i-1]['dist']
+            curr_p = profile[i]['dist']
+            next_p = profile[i+1]['dist']
+            
+            if curr_p <= prev_p and curr_p <= next_p:
+                local_minima.append(profile[i])
     
-    # Adayları mesafeye (riske) göre sırala ki öncelik en düşükte olsun
-    candidates.sort(key=lambda p: p['dist'])
+    # Eğer hiç çukur bulamadıysa (dümdüzse) en küçüğü al
+    if not local_minima:
+        profile.sort(key=lambda p: p['dist'])
+        local_minima.append(profile[0])
+
+    # 4. SEÇİM YAP
+    # En ince (riskli) olanlardan başla
+    local_minima.sort(key=lambda p: p['dist'])
     
-    for cand in candidates:
-        is_duplicate = False
-        for i, existing in enumerate(final_points):
-            if abs(cand['x'] - existing['x']) < min_separation:
-                # Çakışma var! 
-                # Zaten listeye 'en düşükten' başlayarak eklediğimiz için
-                # listedeki nokta muhtemelen daha iyidir veya aynısıdır.
-                # O yüzden bu adayı pas geçiyoruz.
-                is_duplicate = True
+    selected_points = []
+    min_spatial_dist = 40 
+    
+    for candidate in local_minima:
+        if len(selected_points) >= num_points:
+            break
+            
+        too_close = False
+        for chosen in selected_points:
+            if abs(candidate['x'] - chosen['x']) < min_spatial_dist:
+                too_close = True
                 break
         
-        if not is_duplicate:
-            final_points.append(cand)
-            
-    # 5. GÖSTERİM SIRALAMASI (Soldan Sağa)
-    final_output = []
-    final_points.sort(key=lambda p: p['x'])
+        if not too_close:
+            selected_points.append(candidate)
     
-    for p in final_points:
+    # 5. SIRALA (Soldan Sağa)
+    final_output = []
+    selected_points.sort(key=lambda p: p['x'])
+    
+    for p in selected_points:
         final_output.append((p['dist'], p['x'], p['y_s'], p['y_k']))
             
     return final_output
@@ -157,7 +150,8 @@ def compute_multi_thickness(res, image, side, num_points=3):
 def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
     results = {}
     for side in ["LEFT", "RIGHT"]:
-        points = compute_multi_thickness(res, image, side, num_points=3)
+        # px_to_mm_ratio değerini içeriye gönderiyoruz
+        points = compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3)
         side_results = []
         
         if not points:
