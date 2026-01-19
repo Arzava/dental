@@ -52,7 +52,8 @@ def compute_multi_thickness(res, image, side, num_points=3):
     sinus_mask = keep_half(sinus_mask, side)
     kret_mask  = keep_half(kret_mask,  side)
     
-    # 1. KESİŞİM ALANI BUL (Filtresiz)
+    # 1. GEÇERLİ ALANI BUL
+    # Filtreleri kaldırdık, maske nerede varsa orası geçerlidir.
     has_sinus = np.any(sinus_mask > 0, axis=0)
     has_kret = np.any(kret_mask > 0, axis=0)
     valid_cols_mask = np.logical_and(has_sinus, has_kret)
@@ -67,83 +68,88 @@ def compute_multi_thickness(res, image, side, num_points=3):
     # 2. PROFİL ÇIKARMA
     smoothed_kret_ys = get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12)
     
-    # Tüm geçerli noktaları ve mesafeleri kaydet
-    profile = [] # (dist, x, y_s, y_k)
+    # Tüm geçerli noktaları kaydet
+    full_profile = [] # (dist, x, y_s, y_k)
     
     for x_global in range(x_min, x_max):
         if not valid_cols_mask[x_global]: continue
 
-        # Sinüs tabanı (En alt nokta)
         ys_s = np.where(sinus_mask[:, x_global] > 0)[0]
         if ys_s.size == 0: continue
         sinus_bottom = int(ys_s.max())
         
-        # Kret tabanı
         idx = x_global - x_min
         if idx < 0 or idx >= len(smoothed_kret_ys): continue
         kret_bottom = smoothed_kret_ys[idx]
         
-        # Hatalı maske kontrolü
         if kret_bottom is None or kret_bottom <= sinus_bottom: continue
         
         dist = kret_bottom - sinus_bottom
-        profile.append({'dist': dist, 'x': x_global, 'y_s': sinus_bottom, 'y_k': kret_bottom})
+        full_profile.append({'dist': dist, 'x': x_global, 'y_s': sinus_bottom, 'y_k': kret_bottom})
 
-    if not profile: return []
+    if not full_profile: return []
 
-    # 3. LOKAL MİNİMUMLARI (ÇUKURLARI) BUL
-    # Bir nokta, sağındaki ve solundaki komşularından daha düşükse (veya eşitse) lokal minimumdur.
-    local_minima = []
+    # --- YENİ STRATEJİ: HİBRİT SEÇİM (Zorunlu Konumlar + En Düşükler) ---
     
-    # Gürültüyü azaltmak için mesafeler üzerinde hafif bir yumuşatma yapabiliriz ama
-    # burada direkt ham veri üzerinden gidelim ki ince detaylar kaçmasın.
+    candidates = []
+
+    # A. ZORUNLU KONUMLAR (Baş, Orta, Son)
+    # Maske kenarlarındaki hatalardan kaçınmak için %15, %50, %85 noktalarını hedefle
+    target_ratios = [0.15, 0.50, 0.85]
     
-    for i in range(1, len(profile) - 1):
-        prev_p = profile[i-1]['dist']
-        curr_p = profile[i]['dist']
-        next_p = profile[i+1]['dist']
+    # Hızlı erişim için profili X'e göre indeksle
+    profile_by_x = {p['x']: p for p in full_profile}
+    valid_xs = sorted(profile_by_x.keys())
+    valid_xs_arr = np.array(valid_xs)
+    
+    for ratio in target_ratios:
+        target_x = int(x_min + width * ratio)
         
-        # Çukur tespiti
-        if curr_p <= prev_p and curr_p <= next_p:
-            local_minima.append(profile[i])
-            
-    # Eğer hiç lokal minimum bulunamazsa (dümdüz veya hep artan/azalan grafik),
-    # en düşük noktayı ekle.
-    if not local_minima:
-        # Listeyi mesafeye göre sırala en küçüğü al
-        profile.sort(key=lambda p: p['dist'])
-        local_minima.append(profile[0])
+        # Bu hedefe en yakın geçerli noktayı bul
+        idx = (np.abs(valid_xs_arr - target_x)).argmin()
+        nearest_x = valid_xs_arr[idx]
+        
+        # Eğer çok uzak değilse (örn: arada büyük boşluk yoksa) al
+        if abs(nearest_x - target_x) < 30:
+            candidates.append(profile_by_x[nearest_x])
 
-    # 4. AKILLI SEÇİM (SELECTION)
-    # Bulunan çukurları "En Riskli (En İnce)"den başlayarak sırala
-    local_minima.sort(key=lambda p: p['dist'])
+    # B. EN DÜŞÜK NOKTALAR (RİSK GRUBU)
+    # Tüm profilin en düşük noktasını (Global Min) kesinlikle ekle
+    full_profile.sort(key=lambda p: p['dist'])
+    global_min = full_profile[0]
+    candidates.append(global_min)
     
-    selected_points = []
-    # Noktalar arası minimum mesafe (Piksel cinsinden). 
-    # Birbirine çok yakın iki çukuru aynı anda göstermemek için.
-    min_spatial_dist = 40 
+    # Varsa ikinci bir derin çukuru da ekleyebiliriz (opsiyonel)
+    # Ama şimdilik Global Min yeterli, kalabalık olmasın.
+
+    # C. BİRLEŞTİRME VE TEMİZLEME (MERGE & DEDUPLICATE)
+    # Aday noktalar birbirine çok yakınsa, daha düşük (riskli) olanı tut.
     
-    for candidate in local_minima:
-        if len(selected_points) >= num_points:
-            break
-            
-        # Bu aday nokta, daha önce seçilenlere çok yakın mı?
-        too_close = False
-        for chosen in selected_points:
-            if abs(candidate['x'] - chosen['x']) < min_spatial_dist:
-                too_close = True
+    final_points = []
+    min_separation = 40 # 40 pikselden yakın noktaları birleştir
+    
+    # Adayları mesafeye (riske) göre sırala ki öncelik en düşükte olsun
+    candidates.sort(key=lambda p: p['dist'])
+    
+    for cand in candidates:
+        is_duplicate = False
+        for i, existing in enumerate(final_points):
+            if abs(cand['x'] - existing['x']) < min_separation:
+                # Çakışma var! 
+                # Zaten listeye 'en düşükten' başlayarak eklediğimiz için
+                # listedeki nokta muhtemelen daha iyidir veya aynısıdır.
+                # O yüzden bu adayı pas geçiyoruz.
+                is_duplicate = True
                 break
         
-        if not too_close:
-            selected_points.append(candidate)
-    
-    # 5. GÖSTERİM SIRALAMASI
-    # Seçilen noktaları ekranda soldan sağa düzgün durması için X koordinatına göre sırala
-    # Veri formatını eski yapıya çevir (tuple)
+        if not is_duplicate:
+            final_points.append(cand)
+            
+    # 5. GÖSTERİM SIRALAMASI (Soldan Sağa)
     final_output = []
-    selected_points.sort(key=lambda p: p['x'])
+    final_points.sort(key=lambda p: p['x'])
     
-    for p in selected_points:
+    for p in final_points:
         final_output.append((p['dist'], p['x'], p['y_s'], p['y_k']))
             
     return final_output
