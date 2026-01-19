@@ -44,11 +44,6 @@ def get_smoothed_kret_bottom(kret_mask, x_min, x_max, window_size=12):
     return smoothed_bottoms
 
 def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=2.0, height_tolerance_px=100):
-    """
-    FİLTRELER GEVŞETİLDİ:
-    slope_threshold=2.0 -> Eğimli sinüs tabanlarını (o yeşil alanları) kabul et.
-    height_tolerance_px=100 -> Daha derin kavisleri kabul et.
-    """
     sinus_bottoms = []
     valid_indices = [] 
     
@@ -63,12 +58,10 @@ def get_valid_sinus_floor_range(sinus_mask, x_min, x_max, slope_threshold=2.0, h
 
     y_vals = np.array(sinus_bottoms)
     
-    # Yükseklik Filtresi
     deepest_y = np.max(y_vals)
     cutoff_y = deepest_y - height_tolerance_px
     is_in_height_range = y_vals > cutoff_y
     
-    # Eğim Filtresi
     kernel_size = 15
     if len(y_vals) > kernel_size:
         y_smooth = np.convolve(y_vals, np.ones(kernel_size)/kernel_size, mode='same')
@@ -105,29 +98,28 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     sinus_mask = keep_half(sinus_mask, side)
     kret_mask  = keep_half(kret_mask,  side)
     
-    # --- 1. ORTA HAT FİLTRESİ (Çok Azaltıldı) ---
-    # Sadece tam ortadaki %5'lik kısmı sil (Burun direği hizası).
-    # Böylece premolar bölgesindeki yeşil alanlar kurtulur.
-    center_x = w // 2
-    dead_zone_width = int(w * 0.05) 
-    safe_zone_start = center_x - dead_zone_width
-    safe_zone_end   = center_x + dead_zone_width
-
+    # --- 1. ORTA HAT FİLTRESİ (İPTAL EDİLDİ - %0) ---
+    # Artık merkezden herhangi bir alanı silmiyoruz.
+    # Maske nerede varsa orada ölçüm yapılacak.
+    
     has_sinus = np.any(sinus_mask > 0, axis=0)
     has_kret = np.any(kret_mask > 0, axis=0)
+    
+    # Sadece ikisinin kesiştiği yerler geçerli
     valid_cols_mask = np.logical_and(has_sinus, has_kret)
-    valid_cols_mask[safe_zone_start:safe_zone_end] = False
+    
+    # Eskiden buradaki 'dead zone' silme kodunu kaldırdık.
     
     common_cols = np.where(valid_cols_mask)[0]
     if common_cols.size == 0: return []
 
     x_min, x_max = common_cols.min(), common_cols.max()
     
-    # --- 2. DUVAR VE EĞİM FİLTRESİ (Gevşetildi) ---
+    # --- 2. DUVAR VE EĞİM FİLTRESİ ---
     valid_x_range = get_valid_sinus_floor_range(
         sinus_mask, x_min, x_max, 
-        slope_threshold=2.0,    # Daha dik yokuşlara izin ver
-        height_tolerance_px=100 # Daha derin çukurlara izin ver
+        slope_threshold=2.0,    
+        height_tolerance_px=100 
     )
     
     if not valid_x_range: return []
@@ -142,16 +134,10 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     
     measurements = []
 
-    # --- 3. BÖLGESEL TARAMA (SECTOR SCANNING) ---
-    # Alanı 3 parçaya böl ve her parçanın içindeki EN İNCE (En düşük) noktayı bul.
-    # Bu yöntem, nokta atışı yapmadığı için aradaki çukurları yakalar.
-    
+    # --- 3. BÖLGESEL TARAMA ---
     if width < 50:
-        # Alan darsa tek parça
         sectors = [(real_x_min, real_x_max)]
     else:
-        # Alanı 3 eşit parçaya böl
-        # p1--[Sektor1]--p2--[Sektor2]--p3--[Sektor3]--p4
         p1 = real_x_min
         p2 = real_x_min + int(width * 0.33)
         p3 = real_x_min + int(width * 0.66)
@@ -166,7 +152,6 @@ def compute_multi_thickness(res, image, side, num_segments=3):
     for s_start, s_end in sectors:
         best_in_sector = None
         
-        # Sektör içindeki her pikseli tara
         for x_global in range(s_start, s_end):
             if not valid_cols_mask[x_global]: continue
             if x_global < real_x_min or x_global > real_x_max: continue
@@ -184,7 +169,6 @@ def compute_multi_thickness(res, image, side, num_segments=3):
             
             dist = kret_bottom - sinus_bottom
             
-            # Bu sektördeki en küçük (en ince) kemiği bul
             if best_in_sector is None or dist < best_in_sector[0]:
                 best_in_sector = (dist, x_global, sinus_bottom, kret_bottom)
         
