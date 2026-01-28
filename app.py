@@ -116,11 +116,11 @@ def process_image(image_input, model, alpha_val, px_mm_val):
             text_pos = (x - 20, y_k + vertical_offset)
             
             # Siyah kontur (okunabilirlik için)
-            cv2.putText(img_result, text_label, text_pos, 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+           # cv2.putText(img_result, text_label, text_pos, 
+             #           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
             # Beyaz yazı
             cv2.putText(img_result, text_label, text_pos, 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 3, cv2.LINE_AA)
             
             # Kılavuz Çizgisi (Yazı uzaktaysa)
             if vertical_offset > 25:
