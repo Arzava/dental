@@ -120,7 +120,7 @@ def process_image(image_input, model, alpha_val, px_mm_val):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
             # Beyaz yazı
             cv2.putText(img_result, text_label, text_pos, 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
             
             # Kılavuz Çizgisi (Yazı uzaktaysa)
             if vertical_offset > 25:
@@ -185,14 +185,15 @@ with st.sidebar:
     alpha = st.slider("Maske Opaklığı", 0.0, 1.0, 0.4, step=0.05)
     
     st.divider()
-    st.subheader("📋 Karar Verme Protokolü")
+    st.subheader("📋 Yeni Protokol")
     st.info("0-3mm: Açık Lift (Çift)")
     st.warning("3-5mm: Açık Lift (Tek)")
     st.warning("6-8mm: Kapalı Lift")
     st.success("8mm+: Gerekmez")
     
     st.divider()
-    
+    st.caption("Dr. Muhammed ÇELİK")
+
 # --- ANA EKRAN ---
 st.title("🦷 Otomatik İmplant Planlama")
 
