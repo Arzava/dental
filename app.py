@@ -124,9 +124,9 @@ def process_image(image_input, model, alpha_val, px_mm_val):
                 text_label,
                 text_pos,
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,              # yazı boyutu (0.6 küçüktü)
-                (255, 0, 0),      # mavi (BGR)
-                3,                # kalınlık → bold etkisi
+                0.9,
+                (255, 0, 0),   # mavi
+                3,             # kalın
                 cv2.LINE_AA
             )
             
