@@ -124,10 +124,10 @@ def process_image(image_input, model, alpha_val, px_mm_val):
                 text_label,
                 text_pos,
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.9,            # yazı boyutu
-                (255, 0, 0),    # mavi (BGR)
-                3,              # kalınlık → bold etkisi
-                cv2.LINE_AA
+                0.9,
+                (255, 0, 0),   # mavi
+                3,             # kalın
+                cv2.LINE_8     # ← KRİTİK: gölgeyi bitirir
             )
             
             # Kılavuz Çizgisi (Yazı uzaktaysa)
