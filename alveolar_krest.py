@@ -216,7 +216,7 @@ def compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3):
         final_output.append((p['dist_px'], p['x'], p['y_s'], p['y_k']))
             
     return final_output
-"""
+
 def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
     results = {}
     for side in ["LEFT", "RIGHT"]:
@@ -224,7 +224,8 @@ def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
         side_results = []
         
         if not points:
-            results[side] = {"points": [], "global_decision": "ÖLÇÜM YOK", "min_mm": None}
+            #results[side] = {"points": [], "global_decision": "ÖLÇÜM YOK", "min_mm": None}
+            results[side] = {"points": [], "global_decision": "NO MEASUREMENT", "min_mm": None}
             continue
             
         min_mm_global = 999.0
@@ -234,13 +235,17 @@ def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
             
             # --- YENİ KARAR MEKANİZMASI ---
             if dist_mm <= 3.0:
-                decision = "AÇIK LİFT (Çift Aşamalı)"
+                #decision = "AÇIK LİFT (Çift Aşamalı)"
+                decision = "OPEN LIFT (TWO-STAGE)"
             elif dist_mm <= 5.0:
-                decision = "AÇIK LİFT (Tek Aşamalı)"
+               # decision = "AÇIK LİFT (Tek Aşamalı)"
+                decision = "OPEN LIFT (SINGLE-STAGE)"
             elif dist_mm < 8.0:
-                decision = "KAPALI LİFT"
+                #decision = "KAPALI LİFT"
+                decision = "CLOSED LIFT"
             else:
-                decision = "LİFT GEREKMEZ"
+                #decision = "LİFT GEREKMEZ"
+                decision = "NO LIFT REQUIRED"
             
             if dist_mm < min_mm_global: min_mm_global = dist_mm
 
@@ -251,68 +256,16 @@ def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
 
         # Global Karar (En kritik değere göre)
         if min_mm_global <= 3.0:
-            g_dec = "AÇIK LİFT (Çift Aşamalı)"
-        elif min_mm_global <= 5.0:
-            g_dec = "AÇIK LİFT (Tek Aşamalı)"
-        elif min_mm_global < 8.0:
-            g_dec = "KAPALI LİFT"
-        else:
-            g_dec = "LİFT GEREKMEZ"
-
-        results[side] = {
-            "points": side_results,
-            "global_decision": g_dec,
-            "min_mm": round(min_mm_global, 2)
-        }
-    return results
-    """
-    def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
-    results = {}
-    for side in ["LEFT", "RIGHT"]:
-        points = compute_multi_thickness(res, image, side, px_to_mm_ratio, num_points=3)
-        side_results = []
-        
-        if not points:
-            results[side] = {
-                "points": [],
-                "global_decision": "NO MEASUREMENT",
-                "min_mm": None
-            }
-            continue
-            
-        min_mm_global = 999.0
-        for p in points:
-            dist_px, x, y_sinus, y_kret = p
-            dist_mm = dist_px * px_to_mm_ratio
-            
-            # --- DECISION MECHANISM ---
-            if dist_mm <= 3.0:
-                decision = "OPEN LIFT (TWO-STAGE)"
-            elif dist_mm <= 5.0:
-                decision = "OPEN LIFT (SINGLE-STAGE)"
-            elif dist_mm < 8.0:
-                decision = "CLOSED LIFT"
-            else:
-                decision = "NO LIFT REQUIRED"
-            
-            if dist_mm < min_mm_global:
-                min_mm_global = dist_mm
-
-            side_results.append({
-                "mm": round(dist_mm, 2),
-                "px": dist_px,
-                "decision": decision,
-                "coords": (x, y_sinus, y_kret)
-            })
-
-        # Global Decision (based on the most critical value)
-        if min_mm_global <= 3.0:
+            #g_dec = "AÇIK LİFT (Çift Aşamalı)"
             g_dec = "OPEN LIFT (TWO-STAGE)"
         elif min_mm_global <= 5.0:
+            #g_dec = "AÇIK LİFT (Tek Aşamalı)"
             g_dec = "OPEN LIFT (SINGLE-STAGE)"
         elif min_mm_global < 8.0:
+            #g_dec = "KAPALI LİFT"
             g_dec = "CLOSED LIFT"
         else:
+            #g_dec = "LİFT GEREKMEZ"
             g_dec = "NO LIFT REQUIRED"
 
         results[side] = {
@@ -320,5 +273,4 @@ def alveolar_krest_analysis(res, image, px_to_mm_ratio=0.1):
             "global_decision": g_dec,
             "min_mm": round(min_mm_global, 2)
         }
-
     return results
